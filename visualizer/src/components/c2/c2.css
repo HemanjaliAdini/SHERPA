@@ -114,6 +114,212 @@
   text-transform: uppercase;
 }
 
+/* Event alerts (map-alerts.ts): a callout whose stem ends on the place the event happened */
+.c2-alert-anchor {
+  background: transparent;
+  border: none;
+}
+
+.c2-alert {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  pointer-events: auto;
+  font-family: system-ui, sans-serif;
+}
+
+.c2-alert-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 260px;
+  padding: 4px 8px 4px 5px;
+  border: 1px solid #fb7185;
+  border-radius: 6px;
+  background: #4c0519f2;
+  color: #ffe4e6;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 50%);
+  white-space: nowrap;
+}
+
+.c2-alert-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #f43f5e;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.c2-alert-body {
+  display: flex;
+  flex-direction: column;
+  line-height: 16px;
+}
+
+.c2-alert-title {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* The full line shows on a new alert, and on hover once it has settled */
+.c2-alert-text {
+  display: none;
+  font-size: 11px;
+  white-space: normal;
+  min-width: 180px;
+}
+
+.c2-alert-fresh .c2-alert-text,
+.c2-alert-selected .c2-alert-text,
+.c2-alert:hover .c2-alert-text {
+  display: block;
+}
+
+.c2-alert:hover,
+.c2-alert-selected {
+  z-index: 10;
+}
+
+.c2-alert-selected .c2-alert-box {
+  border-color: #fde047;
+}
+
+.c2-alert-stem {
+  width: 2px;
+  background: #fb7185;
+}
+
+/* Compact once settled: smaller, so several fit near one another */
+.c2-alert:not(.c2-alert-fresh) .c2-alert-box {
+  padding: 2px 6px 2px 3px;
+  opacity: 0.92;
+}
+
+.c2-alert-dot {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  margin-bottom: -5px;
+  border: 2px solid #ffe4e6;
+  border-radius: 50%;
+  background: #f43f5e;
+}
+
+.c2-alert-fresh .c2-alert-dot::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid #f43f5e;
+  animation: c2-alert-ping 1.2s ease-out infinite;
+}
+
+.c2-alert-fresh .c2-alert-box {
+  animation: c2-alert-flash 1.2s ease-in-out 3;
+}
+
+@keyframes c2-alert-ping {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+@keyframes c2-alert-flash {
+  50% {
+    background: #9f1239;
+  }
+}
+
+/* Resolved: its effect is over (a road reopened, the casualty delivered or picked up) */
+.c2-alert-resolved .c2-alert-box {
+  border-color: #4ade80;
+  background: #052e16f2;
+  color: #dcfce7;
+}
+
+.c2-alert-resolved .c2-alert-icon,
+.c2-alert-resolved .c2-alert-dot {
+  background: #16a34a;
+}
+
+.c2-alert-resolved .c2-alert-stem {
+  background: #4ade80;
+}
+
+.c2-alert-resolved.c2-alert-fresh .c2-alert-dot::after {
+  border-color: #16a34a;
+}
+
+.c2-alert-resolved.c2-alert-fresh .c2-alert-box {
+  animation-name: c2-alert-flash-resolved;
+}
+
+.c2-alert-resolved:not(.c2-alert-fresh) {
+  opacity: 0.75;
+}
+
+@keyframes c2-alert-flash-resolved {
+  50% {
+    background: #166534;
+  }
+}
+
+/* An event in the inspector (inspector.ts eventCard) */
+.c2-event-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.c2-event-status {
+  margin-left: auto;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  background: #374151;
+  color: #e5e7eb;
+}
+
+.c2-event-applied .c2-event-status {
+  background: #f43f5e;
+  color: #fff;
+}
+
+.c2-event-resolved .c2-event-status {
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+.c2-event-failed .c2-event-status {
+  background: #78350f;
+  color: #fde68a;
+}
+
+.c2-event-line {
+  line-height: 1.4;
+}
+
+.c2-event-ended {
+  color: #86efac;
+}
+
 @keyframes radio-bubble-life {
   0% { opacity: 0; transform: translateY(5px); }
   6%, 86% { opacity: 1; transform: translateY(0); }

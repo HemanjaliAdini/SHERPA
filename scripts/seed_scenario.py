@@ -4,7 +4,8 @@ Medical points, vehicles, casualties and one (inactive) threat are created at th
 synthetic coordinates and linked to their nearest junction by NEAR / AFFECTS edges. The nearest
 junction is found inside TuringDB. Runs as one change that is only submitted if everything succeeds.
 
-Usage: uv run python scripts/seed_scenario.py [graph_name]   (default: evac2)
+Usage: uv run python scripts/seed_scenario.py [graph_name] [--demo]   (default: evac2)
+  --demo  also the scripted demo's events (scripts/demo_script.py); Reset then puts them back too
 Needs a running TuringDB server (./run.sh). Refuses to run twice: there are no uniqueness constraints.
 """
 import sys
@@ -13,8 +14,12 @@ from turingdb import TuringDB
 
 from build_roads import haversine_m
 from cypher import lit, props
+from demo_script import EVENTS
+from events import create_clause
 
-GRAPH = sys.argv[1] if len(sys.argv) > 1 else "evac2"
+ARGS = [a for a in sys.argv[1:] if a != "--demo"]
+GRAPH = ARGS[0] if ARGS else "evac2"
+DEMO = "--demo" in sys.argv
 COS2_LAT = 0.456  # cos^2(47.5 deg): equirectangular squared-distance weight for longitude
 
 CAPS = {
@@ -93,7 +98,7 @@ def snap(client: TuringDB, lat: float, lon: float) -> tuple[int, float]:
     return int(r["nid"]), haversine_m((lat, lon), (float(r["lat"]), float(r["lon"])))
 
 
-def create_statement() -> str:
+def create_statement(demo: bool = False) -> str:
     parts = []
     for eid, name, typ, lat, lon, medics, beds in MEDICAL_POINTS:
         parts.append(
@@ -121,9 +126,14 @@ def create_statement() -> str:
         )
     # Simulator clock (written only by simulate.py) and controls (written only by the C2 screen)
     parts.append("(:Clock " + props(id=lit("CLOCK"), now=f"datetime({lit(SCENARIO_START)})", run=0) + ")")
-    parts.append("(:SimControl " + props(id=lit("SIM"), running=lit(False), speed=1.0, reset=lit(False)) + ")")
+    # `script`: a demo graph plays scripts/demo_script.py, and Reset puts its events back (events.reset_events)
+    parts.append("(:SimControl " + props(id=lit("SIM"), running=lit(False), speed=1.0, reset=lit(False),
+                                         script=lit(demo)) + ")")
     tid, ttype, level, active, _, _ = THREAT
     parts.append(f"({var(tid)}:Threat " + props(id=lit(tid), type=lit(ttype), level=level, active=active) + ")")
+    # What happens during the run (PRD 6.11), pending until the simulator reaches each one's minute
+    if demo:
+        parts += [create_clause(e) for e in EVENTS]
     return "CREATE " + ",\n       ".join(parts)
 
 
@@ -144,7 +154,7 @@ def main() -> None:
 
     client.new_change()
     try:
-        client.query(create_statement())
+        client.query(create_statement(DEMO))
         client.query("COMMIT")  # new nodes are invisible to the next queries until committed
         ids = client.query(
             "MATCH (n) WHERE n:MedicalPoint OR n:Vehicle OR n:Casualty OR n:Threat RETURN id(n) AS nid, n.id AS eid"

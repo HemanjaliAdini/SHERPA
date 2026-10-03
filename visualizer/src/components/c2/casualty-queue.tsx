@@ -113,6 +113,12 @@ export const CasualtyQueue = ({ queue, now, selectedNid, onLocate, onPlan, onTri
                 <div className="text-content-fourth mt-0.5 text-xs">
                   Injured {formatClock(c.injuredAt)} {'·'} {STATUS_LABEL[c.status] ?? c.status}
                 </div>
+                {c.stranded && (
+                  <div className="mt-1 rounded bg-[#4c0519] px-2 py-1 text-xs font-medium text-[#ffe4e6]">
+                    Stranded: its vehicle stopped. Picked up first, by the next free vehicle of that
+                    type
+                  </div>
+                )}
                 {c.mist.injuries && (
                   <div className="text-content-primary mt-1 space-y-0.5 text-xs">
                     <div>M: {c.mist.mechanism}</div>
