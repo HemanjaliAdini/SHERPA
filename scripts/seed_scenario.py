@@ -25,32 +25,33 @@ CAPS = {
     "role3": ["first_aid", "stabilisation", "surgery", "icu"],
 }
 
+# Positions sit on (or within ~200 m of) a junction of the real OSM road network, so every entity is reachable.
 # id, name, type, lat, lon, medics_available, free_beds
 MEDICAL_POINTS = [
-    ("CCP-W", "Collection point West", "ccp", 47.456, 35.795, 1, 0),
+    ("CCP-W", "Collection point West", "ccp", 47.4448, 35.7912, 1, 0),
     ("CCP-C", "Collection point Centre", "ccp", 47.455, 35.825, 1, 0),
-    ("CCP-E", "Collection point East", "ccp", 47.458, 35.865, 1, 0),
-    ("HP-1", "Handover point 1", "handover", 47.500, 35.812, 1, 0),
-    ("HP-2", "Handover point 2", "handover", 47.505, 35.860, 1, 0),
+    ("CCP-E", "Collection point East", "ccp", 47.4558, 35.8484, 1, 0),
+    ("HP-1", "Handover point 1", "handover", 47.5050, 35.8132, 1, 0),
+    ("HP-2", "Handover point 2", "handover", 47.5025, 35.8551, 1, 0),
     ("R1-A", "Role 1 Orikhiv", "role1", 47.560, 35.790, 3, 4),
     ("R1-B", "Role 1 alternate", "role1", 47.575, 35.760, 2, 6),
-    ("R2B-1", "Role 2 Basic", "role2_basic", 47.624, 35.648, 5, 8),
+    ("R2B-1", "Role 2 Basic", "role2_basic", 47.6376, 35.6614, 5, 8),
     ("R3-1", "Role 3 Zaporizhzhia", "role3", 47.820, 35.180, 12, 20),
 ]
 # id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km, battery_pct, max_threat, speed_kmh
 # UGVs wait at HP-1 and ambulances at R1-A, offset ~20 m so the markers do not overlap.
 # speed_kmh is the vehicle's own current speed; a road's cap for the vehicle type can lower it (routing.py)
 VEHICLES = [
-    ("UGV-1", "ugv", 47.5002, 35.812, 1, 0, 25.0, 90.0, 0.8, 20.0),
-    ("UGV-2", "ugv", 47.4998, 35.812, 1, 0, 25.0, 75.0, 0.8, 15.0),
+    ("UGV-1", "ugv", 47.5052, 35.8132, 1, 0, 25.0, 90.0, 0.8, 20.0),
+    ("UGV-2", "ugv", 47.5048, 35.8132, 1, 0, 25.0, 75.0, 0.8, 15.0),
     ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
     ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
 # id, lat, lon, time_of_injury, triage_category, mobility. All on the near side of the front line (47.436)
 CASUALTIES = [
     ("CAS-1", 47.4430, 35.8335, "2023-09-12T04:10:00Z", "T1", "litter"),
-    ("CAS-2", 47.4400, 35.8100, "2023-09-12T04:25:00Z", "T2", "ambulatory"),
-    ("CAS-3", 47.4385, 35.8600, "2023-09-12T04:40:00Z", "T1", "litter"),
+    ("CAS-2", 47.4381, 35.7986, "2023-09-12T04:25:00Z", "T2", "ambulatory"),
+    ("CAS-3", 47.4440, 35.8485, "2023-09-12T04:40:00Z", "T1", "litter"),
     ("CAS-4", 47.4415, 35.8250, "2023-09-12T04:52:00Z", "T3", "ambulatory"),
     ("CAS-5", 47.4395, 35.8450, "2023-09-12T05:05:00Z", "T2", "litter"),
 ]

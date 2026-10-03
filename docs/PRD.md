@@ -238,9 +238,9 @@ To settle together (see the plan: "Together, first").
     idle. Real doctrine: the UGV carries to a `handover` point and an ambulance takes over.
     - *Proposal:* a mission can have two legs (UGV to the nearest `handover`, ambulance onward). This also keeps
       ambulances out of the threat zone, together with 7.1.
-11. **Scenario coordinates.** They come from the toy graph and were not chosen on real roads: several entities sit
-    0.5–1.8 km from the nearest junction (for example CCP-W, CCP-E, R2B-1, CAS-3). Noo to move them onto real roads
-    and villages.
+11. **Scenario coordinates.** ✅ Resolved: every entity now sits on (or within ~200 m of) a real junction; all 5
+    casualties are reachable by a UGV within range × battery. Scenario kept simple for now: casualties to pick up,
+    no active threat, no bridge event, no scarcity. Clinical content (MIST, triage labels) is still Noo's.
 12. **Two mission planners.** `scripts/routing.py` and the C2 planner (`planner.ts`) differ:
 
     | | `routing.py` | C2 planner |
