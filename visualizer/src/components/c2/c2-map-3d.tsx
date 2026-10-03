@@ -270,27 +270,29 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     if (!graph) return null
     const junctions: GraphNode[] = []
     const entities: GraphNode[] = []
-    for (const n of graph.nodes.values()) (n.label === 'Junction' ? junctions : entities).push(n)
+    for (const n of graph.nodes.values()) {
+      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1")
+      if (n.label === 'Mission' || n.status === 'in_transit') continue
+      ;(n.label === 'Junction' ? junctions : entities).push(n)
+    }
     const roads: number[] = []
     const links: number[] = []
     const anchors = new Set<number>()
     graph.edges.forEach((e, i) => {
       if (!graph.nodes.has(e.src) || !graph.nodes.has(e.dst)) return
+      // Only roads are drawn; NEAR, AFFECTS and mission links stay in the data (inspector, queries)
       if (e.type === 'ROAD') roads.push(i)
       else {
-        links.push(i)
         anchors.add(e.src)
         anchors.add(e.dst)
       }
     })
-    const routes = [...graph.routes.values()]
-      .map((route) =>
-        route
-          .map((nid) => graph.nodes.get(nid))
-          .filter((n) => n !== undefined)
-          .map((n) => [n.lon, n.lat] as [number, number])
-      )
-      .filter((path) => path.length > 1)
+    const routes = graph.activeRoutes
+      .filter((r) => r.points.length > 1)
+      .map((r) => ({
+        color: r.color,
+        path: r.points.map(([lat, lon]) => [lon, lat] as [number, number]),
+      }))
     return { junctions, entities, roads, links, anchors, routes }
   }, [graph])
 
@@ -420,13 +422,13 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       }),
     // Mission routes, through their ROUTE_STEP junctions in order
     data &&
-      new PathLayer<[number, number][]>({
+      new PathLayer<{ color: string; path: [number, number][] }>({
         id: 'mission-routes',
         data: data.routes,
         widthUnits: 'pixels',
-        getPath: (p) => p,
+        getPath: (r) => r.path,
         getWidth: MISSION_ROUTE_STYLE.weight,
-        getColor: rgba(MISSION_ROUTE_STYLE.color, MISSION_ROUTE_STYLE.opacity),
+        getColor: (r) => rgba(r.color, MISSION_ROUTE_STYLE.opacity),
         parameters: GROUND,
       }),
     // NEAR / AFFECTS and mission links between nodes
@@ -504,7 +506,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         transitions: { getPosition: 900 },
         data: data.entities,
         getPosition: ground,
-        getText: (n) => n.id,
+        getText: (n) => n.tag,
         getSize: 11,
         getColor: (n) => rgba('#e5edf5', !selection || selection.nodes.has(n.nid) ? 1 : 0.25),
         getTextAnchor: 'start',

@@ -228,7 +228,13 @@ Each one: what we chose and why. Do not reopen without a new fact.
    - movement uses each vehicle's own `speed_kmh` (6.1).
 9. **TuringDB facts learned building it:** `CALL db.history()` lists the newest commit first, marked `(HEAD)`; the
    `change` parameter of the HTTP API is hexadecimal; edges created after a change's last `COMMIT` are invisible to
-   later reads in that change; a change that creates an edge from a node modified on main meanwhile is rejected.
+   later reads in that change; a change that creates an edge from a node modified on main meanwhile is rejected;
+   **on disk every commit costs ~30 MB whatever it changes** (it filled a laptop disk in an afternoon), in memory
+   ~0.04 MB.
+10. **TuringDB runs in memory and the graph is rebuilt from the repo on every start** (`run.sh`). This is also how
+    the team shares one graph: same commit, same graph. The run history lasts until TuringDB stops.
+    *Rejected:* a shared server (venue wifi, one point of failure, only one simulator allowed), TuringDB Cloud
+    (offline requirement), copying graph folders (gigabytes).
 
 ---
 
@@ -324,7 +330,7 @@ the extra scenarios in `docs/SCENARIOS.md`.
 - ✅ OSM roads as `Junction` and `ROAD` (`build_roads.py`); `data/osm/roads.json` shared in the repo (pending merge).
 - ✅ Scenario on the real roads (`seed_scenario.py`): every entity on or near a junction, all 5 casualties reachable
   by a UGV.
-- ✅ `scripts/build_graph.sh` builds the graph end to end. Current graph: `evac6` (4,098 junctions, 9,142 roads, with `Clock` and `SimControl`).
+- ✅ `scripts/build_graph.sh` builds the graph end to end. Graph `evac`, rebuilt in memory by `run.sh` on every start (4,098 junctions, 9,142 roads, `Clock`, `SimControl`).
   Graphs built before the `MAX_GAP_M = 60` fix have Robotyne cut off the network: rebuild under a new name.
 - ✅ Route search returning minutes (`routing.py`, 10 tests; and TuringDB `shortestPath` in the C2 planner).
 - **Gate:** met on `evac3`: a route from a casualty to a medical point returns minutes, and a mission is written as

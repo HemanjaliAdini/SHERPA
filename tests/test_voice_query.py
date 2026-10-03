@@ -219,3 +219,9 @@ def test_delivered_and_dead_casualties_leave_the_queue():
     w.casualty("CAS-1").status = "delivered"
     w.casualty("CAS-3").status = "dead"
     assert [r[0] for r in handler("queue")(w, Slots()).rows] == ["CAS-2"]
+
+
+@pytest.mark.parametrize("intent", INTENTS, ids=lambda i: i.name)
+def test_every_question_has_an_answer_on_an_empty_graph(intent):
+    empty = World(NOW, [], [], [], [], [], [])
+    assert intent.handler(empty, Slots(casualty="CAS-1", vehicle="UGV-1", triage="T1", capability="surgery")).say

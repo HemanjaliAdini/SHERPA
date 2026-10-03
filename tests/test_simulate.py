@@ -269,3 +269,10 @@ def test_rejected_pass_does_not_kill_the_simulator(monkeypatch):
 
     monkeypatch.setattr(simulate, "loop_once", rejected)
     assert simulate.run_pass(None) == simulate.PAUSED_POLL_S
+
+
+def test_two_resets_in_a_row(fresh):
+    """A reset right after a reset changes nothing else; it must still commit (a new run), not be refused."""
+    in_change(fresh, reset_writes)
+    in_change(fresh, reset_writes)
+    assert one(fresh, "MATCH (k:Clock) RETURN k.run AS run")["run"] >= 2

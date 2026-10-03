@@ -102,6 +102,8 @@ def cypher(graph: str, change: str | None, query: str) -> list[dict]:
                                  method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         body = json.load(resp)
+    if body.get("error") == "GRAPH_NOT_FOUND":
+        raise RuntimeError(f"There is no graph '{graph}' in TuringDB. Check ?graph= in the page address.")
     if "error" in body:
         raise RuntimeError(f"{body['error']}: {body.get('error_details', '')}")
     columns = body["header"]["column_names"]

@@ -1,8 +1,11 @@
 """Voice questions for the C2 page: speech -> text (Parakeet) -> intent (MiniLM) -> answer from the graph.
 
-  POST /voice/ask?graph=evac3[&change=..][&now=ISO]   body: 16 kHz mono WAV (Content-Type audio/wav)
+  POST /voice/ask?graph=<name>[&change=..][&now=ISO]  body: 16 kHz mono WAV (Content-Type audio/wav)
                                                        or JSON {"text": "...", "graph": ..., "change": ..., "now": ...}
   GET  /voice/health                                   which models are loaded
+
+Any graph: the C2 page names the one it shows on every question; $GRAPH (set by run.sh) is the fallback when a
+request names none. Without `now`, answers use the graph's simulator Clock.
 
 Both models run locally on CPU (downloaded once from Hugging Face, then offline). Text questions work as soon as
 MiniLM is loaded; Parakeet loads and warms up in the background, which takes about a minute.
@@ -26,7 +29,7 @@ from voice_query import INTENTS, Matcher, ask
 ASR_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 PORT = int(os.environ.get("VOICE_PORT", 6680))
-DEFAULT_GRAPH = os.environ.get("GRAPH", "evac2")
+DEFAULT_GRAPH = os.environ.get("GRAPH")  # only for requests that name no graph
 
 log = logging.getLogger("voice")
 
@@ -115,12 +118,18 @@ class Handler(BaseHTTPRequestHandler):
                 text = params.get("text", "")
             if MODELS.matcher is None:
                 return self.reply(503, {"error": "the intent model is still loading"})
+            graph = params.get("graph") or DEFAULT_GRAPH
+            if not graph:
+                return self.reply(400, {"error": "which graph? add ?graph=<name> or start with GRAPH=<name>"})
             now = datetime.fromisoformat(params["now"]) if params.get("now") else None  # None: the graph's Clock
-            result = ask(MODELS.matcher, text, params.get("graph") or DEFAULT_GRAPH, params.get("change"), now)
+            result = ask(MODELS.matcher, text, graph, params.get("change"), now)
             result["ms"] = ms | result.get("ms", {})
-            log.info("%r -> %s (%.2f)%s", text, result.get("intent"), result.get("score", 0),
+            log.info("[%s] %r -> %s (%.2f)%s", graph, text, result.get("intent"), result.get("score", 0),
                      "" if result["understood"] else " NOT UNDERSTOOD")
             self.reply(200, result)
+        except RuntimeError as e:  # TuringDB said no: the message is meant for the person asking
+            log.warning("question failed: %s", e)
+            self.reply(502, {"error": str(e)})
         except Exception as e:
             log.exception("question failed")
             self.reply(500, {"error": f"{type(e).__name__}: {e}"})
@@ -134,7 +143,8 @@ def main() -> None:
     log.setLevel(logging.INFO)
     MODELS.load_matcher()
     threading.Thread(target=MODELS.load_asr, daemon=True).start()
-    log.info("listening on http://localhost:%d/voice (default graph %s)", PORT, DEFAULT_GRAPH)
+    log.info("listening on http://localhost:%d/voice (graph from each request%s)", PORT,
+             f", else {DEFAULT_GRAPH}" if DEFAULT_GRAPH else "")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 

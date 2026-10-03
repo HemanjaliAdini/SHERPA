@@ -33,7 +33,7 @@ class Leg(NamedTuple):
     """One road along a mission route, from one ROUTE_STEP junction to the next."""
     length_m: float
     metres_per_min: float
-    points: list[tuple[float, float]]  # road geometry, start junction to end junction
+    points: list[tuple[float, float]]  # polyline from the start junction to the end junction
 
 
 # --- pure movement -------------------------------------------------------------------------------------------
@@ -87,22 +87,19 @@ def distance_to_junction(legs: list[Leg], index: int) -> float:
 # --- TuringDB side -------------------------------------------------------------------------------------------
 
 
-def parse_geometry(text: str) -> list[tuple[float, float]]:
-    return [tuple(map(float, p.split(","))) for p in text.split(";")]
-
-
 def mission_legs(client: TuringDB, mission_id: str, vehicle_type: str, speed_kmh: float) -> tuple[list[Leg], list[int]]:
     """The roads between consecutive ROUTE_STEPs, and the junction ids in order."""
     steps = rows(client, f"MATCH (m:Mission {{id: {lit(mission_id)}}})-[s:ROUTE_STEP]->(j) "
-                         "RETURN s.order AS o, id(j) AS j ORDER BY o")
+                         "RETURN s.order AS o, id(j) AS j, j.lat AS lat, j.lon AS lon ORDER BY o")
     junctions = [int(s["j"]) for s in steps]
+    coords = [(s["lat"], s["lon"]) for s in steps]
     if not junctions:
         raise RuntimeError(f"mission {mission_id} has no ROUTE_STEPs")
     roads = rows(client, (
         f"MATCH (m:Mission {{id: {lit(mission_id)}}})-[s:ROUTE_STEP]->(a:Junction)-[r:ROAD]->(b:Junction)"
         "<-[t:ROUTE_STEP]-(m) WHERE t.order = s.order + 1 "
         "RETURN s.order AS o, r.length_m AS len, r.speed_ugv_kmh AS ugv, r.speed_ambulance_kmh AS amb, "
-        "r.delay_factor AS delay, r.geometry AS geom ORDER BY o"
+        "r.delay_factor AS delay ORDER BY o"
     ))
     by_order = {}
     for r in roads:
@@ -111,7 +108,8 @@ def mission_legs(client: TuringDB, mission_id: str, vehicle_type: str, speed_kmh
     for order in range(1, len(junctions)):
         r = by_order[order]
         road = Road(0, r["len"], r["ugv"], r["amb"], r["delay"])
-        legs.append(Leg(r["len"], r["len"] / edge_minutes(road, vehicle_type, speed_kmh), parse_geometry(r["geom"])))
+        # Straight between the two junctions, as the C2 map draws roads, so vehicles stay on the drawn line
+        legs.append(Leg(r["len"], r["len"] / edge_minutes(road, vehicle_type, speed_kmh), [coords[order - 1], coords[order]]))
     return legs, junctions
 
 
@@ -192,7 +190,10 @@ def in_change(client: TuringDB, work) -> None:
         client.query("COMMIT")
         client.query("CHANGE SUBMIT")
     except Exception:
-        client.query("CHANGE DELETE")
+        try:
+            client.query("CHANGE DELETE")
+        except TuringDBException:
+            pass  # a failed submit can consume the change; keep the original error, not this one
         raise
     finally:
         client.checkout()
@@ -220,7 +221,11 @@ def reset_writes(client: TuringDB) -> None:
             move_near(client, "Casualty", cid, snap(client, lat, lon)[0], lat, lon)
     for pid, *_, beds in MEDICAL_POINTS:
         client.query(f"MATCH (p:MedicalPoint {{id: {lit(pid)}}}) SET p.free_beds = {beds}")
-    client.query(f"MATCH (k:Clock) SET k.now = datetime({lit(SCENARIO_START)})")
+    # Each reset starts a new run. Besides labelling runs in the history, this keeps every reset commit distinct:
+    # TuringDB refuses a commit identical to an existing one ("Commit already exists"), e.g. two resets in a row
+    run = rows(client, "MATCH (k:Clock) RETURN k.run AS run")[0]["run"]
+    client.query(f"MATCH (k:Clock) SET k.now = datetime({lit(SCENARIO_START)}), "
+                 f"k.run = {int(run if run == run and run is not None else 0) + 1}")
     client.query("MATCH (s:SimControl) SET s.running = false, s.reset = false")
 
 
