@@ -5,7 +5,7 @@ import type { C2MapHandle } from './c2-map'
 // Continuous camera movement while arrow keys are held: speed x elapsed time every animation
 // frame, easing in over RAMP_S, instead of one jump per key-repeat event.
 const PAN_PX_PER_S = 700
-const TURN_DEG_PER_S = 70
+export const TURN_DEG_PER_S = 70
 const TILT_DEG_PER_S = 45
 const RAMP_S = 0.35
 
