@@ -6,6 +6,7 @@
 # the run history lasts until TuringDB stops.
 # Overrides: TURING_DIR (default ~/.turing), GRAPH (default evac),
 #   TURING_FRONTEND_PORT (5180), TURING_API_PORT (6666), TURING_UI_PORT (8080)
+# VOICE=1 also starts the voice question server (needs `uv sync --extra voice`), VOICE_PORT (6680)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -62,6 +63,10 @@ fi
 
 # Simulator: follows the SimControl node (play/pause on the C2 screen), writes one commit per scenario minute
 uv run python scripts/simulate.py "$GRAPH" &
+
+if [ "${VOICE:-0}" = 1 ]; then
+  GRAPH="$GRAPH" uv run --extra voice python scripts/voice_server.py &
+fi
 
 cd visualizer
 [ -d node_modules ] || npm i --no-audit --no-fund
