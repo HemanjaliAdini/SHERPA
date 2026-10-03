@@ -386,6 +386,17 @@ the extra scenarios in `docs/SCENARIOS.md`.
 
 **Parallel work once the common core exists** (simulator, states, events). Each item touches its own files and
 can be picked up by anyone:
+- **Run log and replay, for after-action review** (not now; decided 3 Oct). TuringDB's history is the audit tool
+  (any minute, branches), but in memory it lasts only until TuringDB stops, and on disk it costs ~30 MB per commit.
+  So we keep the recipe, not the database:
+  1. *Record:* the simulator writes `runs/<date>.jsonl`: header (git commit, start), every triage with its scenario
+     minute, play/pause/speed/reset, and milestones (dispatch, pickup, handover, delivery).
+  2. *Replay:* `scripts/replay.py runs/<file>` warns if the code is not the recorded commit, builds a clean graph in
+     memory and applies the triages minute by minute without real-time waits. The result is the same run, commit by
+     commit, to audit with time travel (`?graph=replay-...`).
+  3. *Summary:* per casualty, injury → triage → pickup → delivery in minutes, and golden hour met or not.
+  4. *Check:* a test that records a run, replays it, and gets the same final state and number of minutes.
+  Later: the reasons for rejected options stored on each Mission; "one more UGV" replayed on a branch.
 - **Terrain modelling** (`build_roads.py`, `fetch_osm.py`): off-road paths for UGVs (fields, footpaths), minor roads
   and tracks across the whole sector (today only near the front), and better speeds per road class and surface
   (today our own assumptions; OSM rarely has `maxspeed`).
