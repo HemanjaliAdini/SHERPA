@@ -12,5 +12,5 @@ wheels/
 # Raw OSM downloads and generated parquet
 data/
 
-# Nested visualizer fork (own git repo)
-turingdb-visualizer/
+# macOS
+.DS_Store
