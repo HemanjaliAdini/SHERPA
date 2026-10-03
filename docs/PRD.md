@@ -639,7 +639,9 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   `feat/triage-app` to `data/doctrine/triage_v3.jsonl`. Load it in `scripts/build_graph.sh` after the scenario: with
   `LOAD JSONL` if TuringDB can load into an existing graph, else a small `scripts/seed_doctrine.py` that creates its
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
-- **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → answer, confidence and disagreement per Finding
+- ✅ **A2b. Fusion and recommendation, pure.** Done: `scripts/fusion.py` (`fuse`, `recommend`, `doctrine_from_jsonl`),
+  `tests/test_fusion.py` (CAS-6 to CAS-11, newest per source, doctrine beats MITT, the Condition). For A2c: a
+  `load_doctrine(client)` reading the same rules from the graph. Was: Create `scripts/fusion.py`: `fuse(observations)` → answer, confidence and disagreement per Finding
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
   `tests/test_fusion.py`: the five cases of the section 5 table (CAS-6 to CAS-10) give the answer, recommendation and confidence listed;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
