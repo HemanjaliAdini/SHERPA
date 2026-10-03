@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 
 import { C2Map } from '@/components/c2/c2-map'
 import {
@@ -19,6 +19,13 @@ import { fetchGraph } from '@/components/c2/graph-data'
 import { QueryBar } from '@/components/c2/query-bar'
 import { type Selection, neighbourhood } from '@/components/c2/selection'
 import { useScenarioStore } from '@/stores'
+
+// deck.gl is only downloaded when the 3D view is first opened
+const C2Map3D = lazy(() =>
+  import('@/components/c2/c2-map-3d').then((m) => ({ default: m.C2Map3D }))
+)
+
+type ViewMode = '2d' | '3d'
 
 const NodeKey = ({ color, label, small }: { color: string; label: string; small?: boolean }) => (
   <div className="mb-1 flex items-center gap-2">
@@ -48,7 +55,7 @@ const SectionTitle = ({ children }: { children: string }) => (
   </div>
 )
 
-const Legend = () => (
+const Legend = ({ mode }: { mode: ViewMode }) => (
   <div className="bg-grey-900/90 text-content-primary border-grey-700 absolute bottom-6 left-3 z-[1000] max-h-[80%] w-56 overflow-y-auto rounded-md border p-3 text-xs">
     <SectionTitle>Nodes</SectionTitle>
     <NodeKey color={JUNCTION_COLOR} label="Junction" small />
@@ -77,6 +84,15 @@ const Legend = () => (
     <EdgeKey color={EDGE_STYLE.NEAR.color} dashed label="NEAR" />
     <EdgeKey color={EDGE_STYLE.AFFECTS.color} dashed label="AFFECTS" />
     <EdgeKey color={HIGHLIGHT_COLOR} label="Selected / query result" />
+    {mode === '3d' && (
+      <>
+        <SectionTitle>Column height</SectionTitle>
+        <div className="text-content-fourth">
+          Casualty: triage (T1 tallest). Medical point: free beds. Vehicle: battery %. Threat:
+          level.
+        </div>
+      </>
+    )}
     <div className="text-content-fourth mt-2">
       Click a node to see its relationships; click empty map to clear.
     </div>
@@ -88,6 +104,7 @@ export const TC2Page = () => {
   const change = useScenarioStore((state) => state.change)
   const [selection, setSelection] = useState<Selection | null>(null)
   const [fitRequest, setFitRequest] = useState(0)
+  const [mode, setMode] = useState<ViewMode>('2d')
 
   const graph = useQuery({
     queryKey: ['c2-graph', graphName, change],
@@ -98,6 +115,16 @@ export const TC2Page = () => {
   // A selection refers to one branch's graph; drop it when the branch changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on branch switch only
   useEffect(() => setSelection(null), [graphName, change])
+
+  const mapProps = {
+    graph: graph.data,
+    selection,
+    onSelectNode: (nid: number | null) =>
+      setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid)),
+    graphName,
+    change,
+    fitRequest,
+  }
 
   const unplaced = graph.data?.unplaced
     ? ` \u00b7 ${graph.data.unplaced} nodes without a position`
@@ -110,16 +137,19 @@ export const TC2Page = () => {
 
   return (
     <div className="relative h-full w-full">
-      <C2Map
-        graph={graph.data}
-        selection={selection}
-        onSelectNode={(nid) =>
-          setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid))
-        }
-        graphName={graphName}
-        change={change}
-        fitRequest={fitRequest}
-      />
+      {mode === '2d' ? (
+        <C2Map {...mapProps} />
+      ) : (
+        <Suspense
+          fallback={
+            <div className="c2-map text-content-fourth flex h-full w-full items-center justify-center text-xs">
+              loading 3D view...
+            </div>
+          }
+        >
+          <C2Map3D {...mapProps} />
+        </Suspense>
+      )}
       <QueryBar
         graph={graph.data}
         graphName={graphName}
@@ -129,9 +159,22 @@ export const TC2Page = () => {
           if (outcome?.selection.nodes.size) setFitRequest((n) => n + 1)
         }}
       />
-      <Legend />
+      <Legend mode={mode} />
       <div className="bg-grey-900/90 text-content-fourth border-grey-700 absolute top-3 right-3 z-[1000] rounded-md border px-3 py-1.5 text-xs">
         {graphName} on {change ? `change ${change}` : 'main'} {'\u00b7'} {status}
+      </div>
+      <div className="bg-grey-900/90 border-grey-700 absolute top-12 right-3 z-[1000] flex overflow-hidden rounded-md border text-xs">
+        {(['2d', '3d'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            aria-pressed={mode === m}
+            onClick={() => setMode(m)}
+            className={`px-3 py-1 font-medium ${mode === m ? 'bg-grey-600 text-content-primary' : 'text-content-fourth hover:bg-grey-800'}`}
+          >
+            {m.toUpperCase()}
+          </button>
+        ))}
       </div>
     </div>
   )
