@@ -50,6 +50,10 @@ Orikhiv–Robotyne–Zaporizhzhia, Zaporizhzhia oblast (Ukraine), box 47.40–47
 roads. Minor roads and tracks are included only near the front (47.40–47.62 N, 35.60–35.95 E). Main roads in view:
 T0408, T0803, T0812, T0815. Scenario time: September 2023 (Robotyne). The front line is at about 47.436 N.
 
+The roads are today's OpenStreetMap (2026), not the 2023 network: they reflect the area as the war has left it
+(damaged, rebuilt and newly mapped roads and bridges). This works in our favour: the scenario plays on the terrain
+as it is now.
+
 ![Scenario area around Orikhiv](area-orikhiv.png)
 
 ---
@@ -323,6 +327,12 @@ every layer reads or writes. After that, the layers can be built in parallel.
 - one on missions and versioning (Layers 2–3), on top of `routing.py`;
 - one on the map (Layer 4);
 - Noo on clinical realism: MIST reports, triage, medical point capabilities (7.2–7.4).
+
+**Parallel work once the common core exists** (simulator, states, events). Each item touches its own files and
+can be picked up by anyone:
+- **Terrain modelling** (`build_roads.py`, `fetch_osm.py`): off-road paths for UGVs (fields, footpaths), minor roads
+  and tracks across the whole sector (today only near the front), and better speeds per road class and surface
+  (today our own assumptions; OSM rarely has `maxspeed`).
 
 **Cleanup:** ✅ done (`main.py` deleted, `pandas` declared, README "how to run", Cypher helpers in
 `scripts/cypher.py`, `CAPS` in `seed_scenario.py`).
