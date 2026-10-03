@@ -24,7 +24,11 @@ OUT = Path.home() / ".turing" / "data" / OUT_DIR_NAME
 AMBULANCE_KMH = {
     "trunk": 80, "primary": 70, "secondary": 60, "tertiary": 50,
     "unclassified": 40, "residential": 30, "service": 20, "track": 25,
+    "connector": 10,  # synthetic edge bridging a small gap in OSM, see bridge_gaps()
 }
+MAX_GAP_M = 50  # road networks closer than this are treated as joined (OSM mapping gaps)
+GRID_DEG = 0.0008  # spatial hash cell, larger than MAX_GAP_M in both lat and lon here
+ANCHORS = {"INC-1": (47.445, 35.833), "R1-A": (47.560, 35.790), "R3-1": (47.820, 35.180)}  # sanity check
 UNPAVED_AMBULANCE_CAP_KMH = 30
 UGV_CAP_KMH = 25
 UGV_UNPAVED_CAP_KMH = 18
@@ -36,6 +40,54 @@ def haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     la1, lo1, la2, lo2 = map(math.radians, (*a, *b))
     h = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
     return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(h))
+
+
+class UnionFind:
+    def __init__(self) -> None:
+        self.parent: dict[int, int] = {}
+
+    def find(self, x: int) -> int:
+        self.parent.setdefault(x, x)
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        self.parent[self.find(a)] = self.find(b)
+
+
+def bridge_gaps(ways: list[dict], coords: dict[int, tuple[float, float]]) -> list[tuple[int, int]]:
+    """Pairs of nodes (from different connected pieces, <= MAX_GAP_M apart) to join with a connector.
+
+    OSM roads that nearly touch but share no node (dangling tracks, unsnapped crossings) would otherwise
+    split the network into islands. Closest pairs first, and only pairs that merge two pieces are kept,
+    so this adds the minimum number of connectors. Caveat: it can also join roads across a barrier.
+    """
+    uf = UnionFind()
+    for w in ways:
+        for n in w["nodes"][1:]:
+            uf.union(n, w["nodes"][0])
+    grid: dict[tuple[int, int], list[int]] = {}
+    for n in uf.parent:
+        la, lo = coords[n]
+        grid.setdefault((int(la / GRID_DEG), int(lo / GRID_DEG)), []).append(n)
+    candidates = []
+    for (gy, gx), members in grid.items():
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for a in members:
+                    for b in grid.get((gy + dy, gx + dx), ()):
+                        if a < b and uf.find(a) != uf.find(b):
+                            dist = haversine_m(coords[a], coords[b])
+                            if dist <= MAX_GAP_M:
+                                candidates.append((dist, a, b))
+    connectors = []
+    for _, a, b in sorted(candidates):
+        if uf.find(a) != uf.find(b):
+            uf.union(a, b)
+            connectors.append((a, b))
+    return connectors
 
 
 def parse_maxspeed(v: str | None) -> float | None:
@@ -72,35 +124,32 @@ def main() -> None:
     print(f"{len(coords)} nodes, {len(ways)} ways ({len(ways) - len(complete)} dropped for missing nodes)", flush=True)
 
     use = Counter(n for w in complete for n in w["nodes"])
+    connectors = bridge_gaps(complete, coords)
+    forced = {n for pair in connectors for n in pair}  # ways are cut here so connectors attach to a junction
+    print(f"bridging {len(connectors)} gaps of <= {MAX_GAP_M} m between road pieces", flush=True)
 
     # 1. split ways into junction-to-junction segments
     segments = []  # (src_osm, dst_osm, way_id, tags, [(lat, lon), ...])
     for w in complete:
         nodes = w["nodes"]
-        cuts = [i for i, n in enumerate(nodes) if i in (0, len(nodes) - 1) or use[n] >= 2]
+        cuts = [i for i, n in enumerate(nodes) if i in (0, len(nodes) - 1) or use[n] >= 2 or n in forced]
         for a, b in zip(cuts, cuts[1:]):
             seg = nodes[a : b + 1]
             if seg[0] == seg[-1]:
                 continue
             segments.append((seg[0], seg[-1], w["id"], w["tags"], [coords[n] for n in seg]))
+    for a, b in connectors:
+        segments.append((a, b, 0, {"highway": "connector", "surface": "paved"}, [coords[a], coords[b]]))
     print(f"{len(segments)} segments", flush=True)
 
     # 2. keep the largest connected component
-    parent: dict[int, int] = {}
-
-    def find(x: int) -> int:
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for s, d, *_ in segments:
-        parent[find(s)] = find(d)
-    sizes = Counter(find(n) for n in parent)
+    uf = UnionFind()
+    for src, dst, *_ in segments:
+        uf.union(src, dst)
+    sizes = Counter(uf.find(n) for n in uf.parent)
     keep_root = sizes.most_common(1)[0][0]
-    print(f"{len(sizes)} components; keeping largest ({sizes[keep_root]} of {len(parent)} junctions)", flush=True)
-    segments = [sg for sg in segments if find(sg[0]) == keep_root]
+    print(f"{len(sizes)} components; keeping largest ({sizes[keep_root]} of {len(uf.parent)} junctions)", flush=True)
+    segments = [sg for sg in segments if uf.find(sg[0]) == keep_root]
 
     # 3. nodes
     osm_ids = sorted({n for sg in segments for n in (sg[0], sg[1])})
@@ -117,7 +166,7 @@ def main() -> None:
 
     # 4. edges (one per permitted direction)
     rows = []
-    for s, d, way_id, tags, pts in segments:
+    for src, dst, way_id, tags, pts in segments:
         length = sum(haversine_m(p, q) for p, q in zip(pts, pts[1:]))
         if length <= 0:
             continue
@@ -135,9 +184,9 @@ def main() -> None:
         }
         dirs = direction(tags)
         if dirs in ("fwd", "both"):
-            rows.append({"src": s, "dst": d, "geometry": pts, **common})
+            rows.append({"src": src, "dst": dst, "geometry": pts, **common})
         if dirs in ("rev", "both"):
-            rows.append({"src": d, "dst": s, "geometry": pts[::-1], **common})
+            rows.append({"src": dst, "dst": src, "geometry": pts[::-1], **common})
 
     edges_df = pd.DataFrame(
         {
@@ -156,6 +205,10 @@ def main() -> None:
             "osm_way_id": pd.Series([r["osm_way_id"] for r in rows], dtype="int64"),
         }
     )
+
+    for name, pt in ANCHORS.items():
+        near = min(osm_ids, key=lambda o: haversine_m(pt, coords[o]))
+        print(f"nearest junction to {name}: {haversine_m(pt, coords[near]):.0f} m", flush=True)
 
     OUT.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pandas(nodes_df, preserve_index=False), OUT / "nodes.parquet")
