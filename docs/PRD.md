@@ -121,8 +121,8 @@ as it is now.
 - **Everything that happens during a run is an `Event`** (6.11): a closed bridge, a new casualty, a drone or radio
   observation, more UGVs. The demo script, buttons and the radio create events; the simulator applies them on the
   tick.
-- **Sensor fusion feeds a triage recommendation** (section 5, "Sensor fusion"). Drones, the soldier's triage app and
-  radio reports become `Observation`s of doctrine findings ("bleeding badly?") with a confidence. Fusion decides
+- **Sensor fusion feeds a triage recommendation** (section 5, "Sensor fusion"). Drones and the soldier's triage app (radio
+  reports later) become `Observation`s of doctrine findings ("bleeding badly?") with a confidence. Fusion decides
   which findings are present; the doctrine graph (Noo's, from the TCCC handbook) turns them into a recommended
   category with its reasons. The medical coordinator accepts or changes it.
 - **A mission** is vehicle → casualty → medical point. A UGV drops at a handover or collection point; the casualty
@@ -241,14 +241,14 @@ reasons**, fast, for the medical coordinator to accept or change. Rules, not a l
 
 **Principle: the medic never goes to the casualty; the casualty's data comes to the medic** (6.16). A medic is a
 life we cannot risk at the front, so medics work only at medical points, deciding. No source is a medic examining
-someone: what reaches the coordinator is what drones, the soldiers on the spot (with the triage app) and radio
-reports can gather. The coordinator's decision is the triage itself (accept or change the recommendation), not an
+someone: what reaches the coordinator is what drones and the soldiers on the spot (with the triage app) can
+gather (radio reports later). The coordinator's decision is the triage itself (accept or change the recommendation), not an
 observation.
 
 **The chain, end to end:**
 
 ```
- sources              drone (camera, thermal, speaker+mic) · soldier's triage app · radio report   (never a medic)
+ sources              drone (camera, thermal, speaker+mic) · soldier's triage app   (never a medic; radio: future)
     │  each emits Observations: one doctrine Finding, yes/no, a confidence, a time, a position
     ▼
  1 clean              raw data → Finding ("person lying, red patch on leg" → bleeding_severe = yes, 0.5)
@@ -289,7 +289,9 @@ uses (they reach a category or matter for MARCH):
 | H hypothermia, head | `cold_shivering`, `head_injury_signs`, `mental_status_altered`, `decreased_level_of_consciousness` |
 | (ours) | `mobility`: walks or not. Not in the doctrine; it presets litter or ambulatory for dispatch. |
 
-**What each source can emit, and its weight** (weights and confidences are our assumptions, 7.13):
+**What each source can emit, and its weight.** Weights and confidences are our assumptions for the demo, to be
+checked by Noo (7.13). In production a weight is measured: how often that source is right (the drone detector on
+labelled images such as SARD; the app's answers against the medic's later assessment).
 
 | Source | Emits | Typical confidence | Weight | In the demo |
 |---|---|---|---|---|
@@ -297,7 +299,7 @@ uses (they reach a category or matter for MARCH):
 | Drone thermal | `cold_shivering`, `breathing_distress` | 0.3–0.5 | 0.6 | script |
 | Drone speaker and mic | `conscious` / `unconscious` ("can you hear me? raise a hand") | 0.6–0.8 | 0.6 | script, audio clip if there is time |
 | Soldier's triage app | any soldier-askable `Finding` | 0.9 (a person next to the casualty) | 0.9 | script, as if the app sent it |
-| Radio report | `Finding`s from a spoken MIST or 9-line report, by keyword (C1) | 0.8 | 0.8 | Adini's radio, Parakeet speech to text |
+| Radio report (**future, not in the demo**) | `Finding`s extracted from a spoken report (MIST, 9-line): speech to text, then an LLM maps the text to `Finding` keys. The LLM only extracts findings; the doctrine rules still decide the category. | 0.8 | 0.8 | mentioned in the pitch as the next source (6.17) |
 
 Out: RF detection of phones (position only, nothing clinical); UGV sensors on arrival (later).
 
@@ -307,7 +309,7 @@ Out: RF detection of phones (position only, nothing clinical); UGV sensors on ar
   those saying no, and `p = support × (1 − against)`. Two weak sources that agree give a strong `p`; a reliable "no"
   pulls it down.
 - Write `(Casualty)-[:HAS_FINDING {p, sources, updated_at}]->(Finding)`. Present means `p >= 0.5`.
-- Example: drone 0.5 and radio 0.7 say `bleeding_severe`: `1 − (1 − 0.6·0.5)(1 − 0.8·0.7) = 0.69`, present.
+- Example: drone 0.5 and app 0.9 say `bleeding_severe`: `1 − (1 − 0.6·0.5)(1 − 0.9·0.9) = 0.87`, present.
 
 **Recommendation (step 4):**
 - Injuries = those `INDICATES` from a present `Finding` (Q1), plus those from a `Condition` whose member Findings
@@ -326,7 +328,7 @@ goes to the nearest casualty within 50 m of its `lat, lon`; if none, it creates 
 
 **On the C2 screen:** the queue puts untriaged casualties first, ordered by `recommended_rank`, then the MARCH letter
 of their most urgent present Finding, then time of injury. Each card shows the recommendation, its reasons and a
-chip per source (drone, app, radio). The triage buttons come preselected with the recommendation (and litter or
+chip per source (drone, app). The triage buttons come preselected with the recommendation (and litter or
 ambulatory from `mobility`): one click accepts, or the coordinator picks another.
 
 **Drone images (SARD).** The Search and Rescue Image Dataset (IEEE DataPort, DOI 10.21227/ahxm-k331): 1,981 drone
@@ -423,7 +425,9 @@ Each one: what we chose and why. Do not reopen without a new fact.
     no fusion, only separate reports. Time and position uncertainty: later.
 16. **The medic never goes to the casualty; the data comes to the medic** (3 Oct). Medics stay at medical points and
     decide; they are too valuable to send forward to measure. So no fusion source is a medic examination: drones, the
-    soldiers on the spot with the triage app, and radio reports. This is why sensor fusion exists in this product.
+    soldiers on the spot with the triage app (radio reports later, 6.17). This is why sensor fusion exists in this product.
+17. **Radio is a future source, not in the demo** (3 Oct). Not in the story, and it depended on two other tasks.
+    In the pitch: speech to text, then an LLM extracts `Finding`s from the report; the doctrine rules still decide.
 
 ---
 
@@ -485,7 +489,8 @@ To settle together. None blocks the demo now.
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
 
-13. **Source weights and confidences** (section 5) are our assumptions. To check with Noo and his frontline contact.
+13. **Source weights and confidences** (section 5) are our assumptions. Noo (and his frontline contact) checks them for
+    the demo; in production each weight is measured from how often that source is right.
 14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
     (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
 
@@ -514,8 +519,8 @@ and gets them there, even when everything changes.
    ~05:36: a drone sees a sixth person lying still near the front (`observation`s: position, `mobility` = no,
    `bleeding_severe` 0.5; no casualty there, so a new one is created). ~05:38: a soldier's triage app answers
    "bleeding badly? yes" for the same person (`source = 'app'`, 0.9): fused, the card shows **T1 recommended:
-   bleeding badly (drone, app)**. ~05:40: a radio report says another casualty is struggling to breathe
-   (`breathing_distress`, radio, C1); the queue reorders. The coordinator accepts with one click each.
+   bleeding badly (drone, app)**. ~05:40: the app reports another casualty struggling to breathe
+   (`breathing_distress`); the queue reorders. The coordinator accepts with one click each.
    *(Sensor fusion and Noo's doctrine graph.)*
 2. **The system gets each one to the right place.** Vehicles, routes, the UGV-to-ambulance relay, no manual
    logistics. *(What already works.)*
@@ -523,7 +528,8 @@ and gets them there, even when everything changes.
    cross it (`road_closed`). The system re-routes and the casualty still arrives. **The strong moment.**
 4. **Close by answering objections.** "No network at the front?" The soldier's app gives the recommendation on the
    phone and sends when it can; the late answers fuse with their real time. "Who decides?" The coordinator; the
-   system recommends from TCCC doctrine and shows why. Optional: a voice question ("situation summary") and more
+   system recommends from TCCC doctrine and shows why. "Other sources?" Radio: speech to text, an LLM extracts the
+   findings, and the same rules decide; any new source only has to produce findings. Optional: a voice question ("situation summary") and more
    UGVs (`vehicle_requested`).
 
 ### 8.2 How we work: everything that happens during a run is an event
@@ -568,7 +574,7 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
 - **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → `p` per Finding
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
-  `tests/test_fusion.py`: drone 0.5 + radio 0.7 on `bleeding_severe` gives `p` 0.69 and T1; an app "no" (0.9) pulls a drone "yes" (0.5) down to `p` 0.06;
+  `tests/test_fusion.py`: drone 0.5 + app 0.9 on `bleeding_severe` gives `p` 0.87 and T1; an app "no" (0.9) pulls a drone "yes" (0.5) down to `p` 0.06;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
 - **A2c. The `observation` handler** in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
   `OF`, re-fuse, write `HAS_FINDING` and the `recommended_*` fields. Reset: observations and the casualties they
@@ -597,14 +603,8 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
 - ✅ Ukrainian: questions asked in Ukrainian are answered in Ukrainian (`scripts/voice_text.py`).
 - A question that reads the applied events ("what happened in the last ten minutes?") in `scripts/voice_query.py`.
 
-**C1. Radio.** Owner: Adini. ⬜ Needs A1 and A2c.
-- A recorded radio message (a MIST report, spoken) becomes text, then an `observation` event (and a
-  `casualty_reported` if the casualty is new).
-- Reuse Parakeet: add `POST /radio` to `scripts/voice_server.py`; `Models.transcribe` already turns a WAV into text.
-  Text to `Finding` keys by keywords (bleeding → `bleeding_severe`, struggling to breathe → `breathing_distress`,
-  unconscious → `unconscious`...; vocabulary in section 5), `source = 'radio'`, confidence 0.8.
-- A "Radio" button on the C2 page that plays a prepared clip from `data/radio/` and sends it.
-- **Done when:** playing a clip adds an observation to the right casualty card within one tick.
+**C1. Radio.** Dropped from the demo (6.17); mentioned in the pitch as a future source. Adini is free for another
+task.
 
 **C2. Photo on a casualty.** Owner: Adini. ⬜ Needs A2c.
 - Scripted drone and app images in `visualizer/public/media/`; an observation's `media` is the path
