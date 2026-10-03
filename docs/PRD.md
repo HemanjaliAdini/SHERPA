@@ -289,9 +289,7 @@ uses (they reach a category or matter for MARCH):
 | H hypothermia, head | `cold_shivering`, `head_injury_signs`, `mental_status_altered`, `decreased_level_of_consciousness` |
 | (ours) | `mobility`: walks or not. Not in the doctrine; it presets litter or ambulatory for dispatch. |
 
-**What each source can emit, and its weight.** Weights and confidences are our assumptions for the demo, to be
-checked by Noo (7.13). In production a weight is measured: how often that source is right (the drone detector on
-labelled images such as SARD; the app's answers against the medic's later assessment).
+**What each source can emit, and its weight** (weights and confidences are our assumptions, 7.13):
 
 | Source | Emits | Typical confidence | Weight | In the demo |
 |---|---|---|---|---|
@@ -489,8 +487,7 @@ To settle together. None blocks the demo now.
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
 
-13. **Source weights and confidences** (section 5) are our assumptions. Noo (and his frontline contact) checks them for
-    the demo; in production each weight is measured from how often that source is right.
+13. **Source weights and confidences** (section 5) are our assumptions. To check with Noo and his frontline contact.
 14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
     (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
 
