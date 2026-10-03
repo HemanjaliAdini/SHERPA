@@ -47,7 +47,7 @@ test('the medic triages the batch, the system dispatches on play, and the scenar
   await expect(radio).toHaveCount(0)
   await expect(page.getByLabel('Simulated radio communication', { exact: true })).toHaveCount(0)
   await page.getByTitle('Show on map', { exact: true }).filter({ hasText: 'CAS-1' }).click()
-  await expect(radio.getByRole('article', { name: /Radio message from MED-CAS-/ }).first()).toBeVisible({ timeout: 20000 })
+  await expect(radio.getByRole('article', { name: /Radio message from MED-R1-A/ }).first()).toBeVisible({ timeout: 20000 })
   await expect(radio.getByText(/Triage pending/).first()).toBeVisible()
   await expect(page.getByText('Radio traffic', { exact: true })).toHaveCount(0)
   const savedCount = await radio.locator('article').count()

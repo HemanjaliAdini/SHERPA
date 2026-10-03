@@ -1,4 +1,5 @@
-"""Add stationary field/receiving medic teams and command to an evacuation graph.
+"""Add a stationary medic team at each medical point, and command, to an evacuation graph.
+No medic is placed with a casualty: medics stay at medical points and the data comes to them (PRD 6.16).
 Idempotent: existing entity ids are preserved. These teams communicate; routing still moves vehicles/casualties.
 Usage: uv run python scripts/scene_entities.py [graph]
 """
@@ -9,13 +10,22 @@ from routing import rows
 
 
 def ensure_scene_entities(client):
+    # Graphs built before PRD 6.16 have a field medic with each casualty: remove them
+    if rows(client, 'MATCH (m:Medic)-[:ATTENDS]->() RETURN m.id AS id'):
+        client.new_change()
+        try:
+            client.query('MATCH (m:Medic)-[:ATTENDS]->() DETACH DELETE m')
+            client.query('COMMIT')
+            client.query('CHANGE SUBMIT')
+        except Exception:
+            client.query('CHANGE DELETE')
+            raise
+        finally:
+            client.checkout()
     existing = {r['id'] for r in rows(client, 'MATCH (n) RETURN n.id AS id')}
-    from seed_scenario import CASUALTIES
-    casualties = [{'id': c[0], 'lat': c[1], 'lon': c[2]} for c in CASUALTIES]
     points = rows(client, 'MATCH (p:MedicalPoint) RETURN p.id AS id, p.lat AS lat, p.lon AS lon')
     additions = []
     for label, entities, prefix, relationship, role in [
-        ('Casualty', casualties, 'MED-', 'ATTENDS', 'field'),
         ('MedicalPoint', points, 'MED-', 'BASED_AT', 'receiving'),
     ]:
         for entity in entities:

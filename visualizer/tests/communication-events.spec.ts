@@ -15,12 +15,12 @@ function world(status: string, triage: string, mission = true) {
     vehicles: [], facilities: [{ id: 'R1-A', state: 'operational', medics: 3 }] } as unknown as Scenario
   return { graph, scenario }
 }
-test('untriaged reports originate from a separate field medic', () => {
+test('untriaged reports go from the soldier at the casualty to the medical coordinator', () => {
   const { graph, scenario } = world('reported', '', false)
   const events = communicationEvents(graph, scenario)
   expect(events[0].speaker).toBe('CAS-2')
   expect(events[0].text).toContain('Recorded injury')
-  expect(events[1].speaker).toBe('MED-CAS-2')
+  expect(events[1].speaker).toBe('MED-R1-A')
   expect(events[1].text).toContain('Triage pending')
 })
 test('dispatch and approach use the assigned ambulance and casualty', () => {

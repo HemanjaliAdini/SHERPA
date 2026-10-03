@@ -64,15 +64,18 @@ command dispatch, assigned vehicle movement/pickup, receiving-team reply and han
 Each casualty's messages stay readable when you switch cases. Click its title to collapse or expand the conversation, or × to close it.
 History is captured while this page is open; reset starts a new history, and page reload starts a new session.
 
-Medic teams and command are separate stationary graph entities. Existing simulation and routing still move
+Field reports come from the soldier with the casualty and go to the medical coordinator at R1-A (`MED-R1-A`); no medic
+is placed with a casualty. Medic teams at the medical points and command are separate stationary graph entities. Existing simulation and routing still move
 vehicles and casualties and choose destinations. Radio text is simulated from graph state; no live radio is connected.
+The panel reads each active mission, casualty status, vehicle position and destination together in one query, polled
+every second during playback, so a dispatch shows up even when the map's mission nodes lag behind.
 
 ### Entity info boxes
 
 Click a vehicle, medical point, medic team or the command post to open its info box over the map (× or Esc closes it).
 A vehicle shows casualties aboard out of capacity, who it is collecting and where it delivers, fuel or battery
 (`battery_pct`), range left, speed and damage. A medical point shows patients held, casualties on the way, free beds,
-medics available, capabilities, equipment and vehicles waiting there. A medic team shows its casualty or its point;
+medics available, capabilities, equipment and vehicles waiting there. A medic team shows its point;
 command shows the scenario totals. `Vehicle.damage` and `MedicalPoint.equipment` are placeholder seed values in
 `scripts/seed_scenario.py`; the simulator does not change them.
 

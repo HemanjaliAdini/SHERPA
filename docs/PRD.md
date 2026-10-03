@@ -535,10 +535,13 @@ To settle together. None blocks the demo now.
       time fields on the C2 planner's (`tasked`, `eta` datetime).
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
-13. **Casualty radio panel (3 Oct).** Selecting a casualty opens one sidebar conversation. Messages show
-    sender, recipient and scenario timestamp for report, medic response, recorded triage priority, dispatch,
-    vehicle pickup/transport and receiving-team handover. Per-casualty history is captured while the page is open,
-    preserved when switching cases, and cleared on reset. Map speech bubbles are no longer rendered.
+13. ✅ *Built (Adini).* **Casualty radio panel (3 Oct).** Selecting a casualty opens its simulated radio conversation
+    in a dropdown over the map. Messages show sender, recipient and scenario timestamp for the field report, the
+    coordinator's reply, recorded triage priority, dispatch, vehicle pickup and transport, and receiving-team
+    handover. Field reports come from the soldier with the casualty and go to the medical coordinator at R1-A
+    (`MED-R1-A`); no medic is placed with a casualty (6.16). Per-casualty history is captured while the page is open,
+    preserved when switching cases, and cleared on reset. No map speech bubbles. Not the same as radio as a fusion
+    source (6.17).
 
 14. **Drone confidences** in the demo script (section 5) are our proposal. To check with Noo and his frontline
     contact.

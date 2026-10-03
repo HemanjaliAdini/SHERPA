@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 import { FACILITY_LABEL } from './colors'
 import type { GeoGraph, GraphNode } from './graph-data'
-import { type Facility, type Scenario, formatWait } from './scenario-data'
+import type { Facility, Scenario } from './scenario-data'
 
 export const ENTITY_CARD_LABELS = new Set(['Vehicle', 'MedicalPoint', 'Medic', 'Command'])
 
@@ -132,23 +132,12 @@ function FacilityRows({
   )
 }
 
-function MedicRows({ node, graph, scenario, now }: Omit<Props, 'onClose'>) {
-  const casualtyNode = linked(graph, node.nid, 'ATTENDS', 'out')[0]
+function MedicRows({ node, graph, scenario }: Omit<Props, 'onClose' | 'now'>) {
   const pointNode = linked(graph, node.nid, 'BASED_AT', 'out')[0]
-  const casualty = scenario.casualties.find((c) => c.nid === casualtyNode?.nid)
   const facility = scenario.facilities.find((f) => f.nid === pointNode?.nid)
   return (
     <>
       <Row label="Team status">{words(node.status) || 'unknown'}</Row>
-      {casualty && (
-        <>
-          <Row label="Attending">{casualty.id}</Row>
-          <Row label="Triage">{casualty.triage || 'not triaged yet'}</Row>
-          <Row label="Mobility">{casualty.mobility || 'unknown'}</Row>
-          <Row label="Casualty status">{words(casualty.status)}</Row>
-          <Row label="Waiting since injury">{formatWait(casualty.injuredAt, now)}</Row>
-        </>
-      )}
       {facility && (
         <>
           <Row label="Based at">{facility.name}</Row>
@@ -181,7 +170,7 @@ function CommandRows({ node, scenario }: Pick<Props, 'node' | 'scenario'>) {
   )
 }
 
-export function EntityCard({ node, graph, scenario, now, onClose }: Props) {
+export function EntityCard({ node, graph, scenario, onClose }: Props) {
   const facility =
     node.label === 'MedicalPoint' ? scenario.facilities.find((f) => f.nid === node.nid) : undefined
   const subtitle =
@@ -214,9 +203,7 @@ export function EntityCard({ node, graph, scenario, now, onClose }: Props) {
       <dl className="min-h-0 overflow-y-auto px-3 py-2 text-xs">
         {node.label === 'Vehicle' && <VehicleRows node={node} graph={graph} scenario={scenario} />}
         {facility && <FacilityRows facility={facility} graph={graph} scenario={scenario} />}
-        {node.label === 'Medic' && (
-          <MedicRows node={node} graph={graph} scenario={scenario} now={now} />
-        )}
+        {node.label === 'Medic' && <MedicRows node={node} graph={graph} scenario={scenario} />}
         {node.label === 'Command' && <CommandRows node={node} scenario={scenario} />}
       </dl>
     </section>
