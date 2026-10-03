@@ -46,3 +46,28 @@ const ROAD_WEIGHT: Record<string, number> = {
 }
 
 export const roadWeight = (highway: string) => ROAD_WEIGHT[highway] ?? 1.2
+
+// Entity colours: casualties by triage category, facilities by role, vehicles by kind
+export const TRIAGE_COLOR: Record<string, string> = {
+  T1: '#ef4444',
+  T2: '#f59e0b',
+  T3: '#22c55e',
+  T4: '#9ca3af',
+}
+export const FACILITY_COLOR: Record<string, string> = {
+  ccp: '#2dd4bf',
+  handover: '#c084fc',
+  role1: '#38bdf8',
+  role2_basic: '#3b82f6',
+  role3: '#6366f1',
+}
+export const FACILITY_LABEL: Record<string, string> = {
+  ccp: 'Collection point',
+  handover: 'Handover point',
+  role1: 'Role 1',
+  role2_basic: 'Role 2 Basic',
+  role3: 'Role 3',
+}
+export const VEHICLE_COLOR: Record<string, string> = { ugv: '#f59e0b', ambulance: '#e5e7eb' }
+export const THREAT_MARKER_COLOR = '#fb7185'
+export const FALLBACK_COLOR = '#9ca3af'

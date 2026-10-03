@@ -31,3 +31,20 @@
   font-size: 13px;
   font-weight: 600;
 }
+
+.c2-entity-icon {
+  background: transparent;
+  border: none;
+}
+
+.c2-entity-tooltip {
+  background: #111a24;
+  border: 1px solid #2a3a4d;
+  color: #dbe4ee;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.c2-entity-tooltip::before {
+  display: none;
+}

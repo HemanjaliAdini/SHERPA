@@ -10,23 +10,26 @@ import {
   roadWeight,
   threatColor,
 } from './colors'
+import type { Entity } from './entity-data'
+import { entityMarker } from './entity-icons'
 import type { RoadLine } from './road-data'
 
 // Sector bounds (south-west, north-east): Robotyne front to Zaporizhzhia
 const SECTOR_BOUNDS = L.latLngBounds([47.4, 35.0], [47.9, 35.95])
 const VILLAGE_LABEL_MIN_ZOOM = 11
 
-type Props = { roads: RoadLine[] }
+type Props = { roads: RoadLine[]; entities: Entity[] }
 
 async function loadGeoJson(name: string): Promise<GeoJSON.FeatureCollection> {
   const res = await fetch(`/basemap/${name}.geojson`)
   return res.json()
 }
 
-export const C2Map = ({ roads }: Props) => {
+export const C2Map = ({ roads, entities }: Props) => {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const roadLayer = useRef<L.LayerGroup | null>(null)
+  const entityLayer = useRef<L.LayerGroup | null>(null)
 
   // Create the map and the offline basemap once
   useEffect(() => {
@@ -96,6 +99,7 @@ export const C2Map = ({ roads }: Props) => {
       m.remove()
       map.current = null
       roadLayer.current = null
+      entityLayer.current = null
     }
   }, [])
 
@@ -121,6 +125,17 @@ export const C2Map = ({ roads }: Props) => {
     group.addTo(m)
     roadLayer.current = group
   }, [roads])
+
+  // (Re)draw scenario entities (casualties, facilities, vehicles, threats)
+  useEffect(() => {
+    const m = map.current
+    if (!m) return
+    entityLayer.current?.remove()
+    const group = L.layerGroup()
+    for (const e of entities) entityMarker(e).addTo(group)
+    group.addTo(m)
+    entityLayer.current = group
+  }, [entities])
 
   return <div ref={container} className="c2-map h-full w-full" />
 }
