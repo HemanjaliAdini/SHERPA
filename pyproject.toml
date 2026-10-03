@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "osmium>=4.3.1",
     "pyarrow>=25.0.1",
     "turingdb>=3.0",
 ]
