@@ -148,11 +148,12 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 
 (:Casualty {id, lat, lon, time_of_injury, status, triage_category, mobility,       ✅
             mist_mechanism, mist_injuries, mist_signs, mist_treatment,
-            recommended_category, recommended_rank, recommendation_reason,
+            recommended_category, recommended_rank, recommendation_confidence,
+            recommendation_reason,
             event_id})                                                             🔜 A2, A1
 
 (:Event {id, at, type, payload, status, source, applied_at, error})                🔜 A1
-(:Observation {id, at, received_at, source, finding, value, confidence,           🔜 A2
+(:Observation {id, at, received_at, source, finding, answer, confidence,          🔜 A2
                lat, lon, media, event_id})
 
 Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):          🔜 A2
@@ -185,7 +186,7 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 (:Casualty)-[:HELD_AT]->(:MedicalPoint)                                            ✅
 (:Observation)-[:ABOUT]->(:Casualty)                                               🔜 A2
 (:Observation)-[:OF]->(:Finding)                                                   🔜 A2
-(:Casualty)-[:HAS_FINDING {p, sources, updated_at}]->(:Finding)    fusion output   🔜 A2
+(:Casualty)-[:HAS_FINDING {answer, confidence, sources, disagree}]->(:Finding)  🔜 A2
 (:Finding)-[:INDICATES]->(:Injury)-[:TRIAGES_TO]->(:TriageCategory)  doctrine      🔜 A2
 (:Finding)-[:PART_OF]->(:Condition)-[:INDICATES]->(:Injury)          doctrine A∧B  🔜 A2
 (:MedicalPoint)-[:REQUESTS_VEHICLE | :REQUESTS_MEDICS]->(:MedicalPoint)            bonus
@@ -221,7 +222,7 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 |---|---|---|---|
 | `road_closed` | `{osm_way_id}` | Every `ROAD` with that `osm_way_id` gets `status = 'closed'` and `closed_by = <event id>`; then the re-route rule below. | script, button |
 | `casualty_reported` | `{id, lat, lon, time_of_injury, mist_mechanism, mist_injuries, mist_signs, mist_treatment}` | New `Casualty` with `status = 'reported'`, linked `NEAR` its junction (`snap` in `seed_scenario.py`). | script, radio |
-| `observation` | `{casualty_id?, source, finding, value, confidence, lat, lon, observed_at?, media?}` | New `Observation`, associated to a casualty (rule in "Sensor fusion"), `-[:OF]->` its `Finding`; re-fuse that casualty and update its recommendation. | script (drone, app), radio |
+| `observation` | `{casualty_id?, source, finding, answer, confidence?, lat, lon, observed_at?, media?}` (`answer`: yes / no / unsure; `confidence` only from the drone) | New `Observation`, associated to a casualty (rule in "Sensor fusion"), `-[:OF]->` its `Finding`; re-fuse that casualty and update its recommendation. | script (drone, app), radio |
 | `vehicle_requested` | `{type, count, delay_min, at_point}` | Creates `count` `vehicle_added` events at `at + delay_min`. | button |
 | `vehicle_added` | `{id, type, at_point}` | New idle `Vehicle` at the medical point `at_point`, with the seed values of its type. | `vehicle_requested` |
 
@@ -249,14 +250,17 @@ observation.
 
 ```
  sources              drone (camera, thermal, speaker+mic) · soldier's triage app   (never a medic; radio: future)
-    │  each emits Observations: one doctrine Finding, yes/no, a confidence, a time, a position
+    │  each emits Observations: one doctrine Finding, yes / no / unsure, a confidence (drone), a time, a position
     ▼
  1 clean              raw data → Finding ("person lying, red patch on leg" → bleeding_severe = yes, 0.5)
  2 associate          which casualty? the given casualty_id, else the nearest one within 50 m, else a new casualty
- 3 combine            per casualty and Finding → probability p (rule below) → HAS_FINDING {p, sources}
- 4 recommend          Findings with p >= 0.5 → INDICATES → Injury → TRIAGES_TO → most urgent TriageCategory
+ 3 combine            per casualty and Finding → one answer yes / no / unsure (+ "sources disagree") and a
+                      confidence → HAS_FINDING {answer, confidence, sources}
+ 4 recommend          Noo's engine, unchanged: Findings answered yes → INDICATES → Injury → TRIAGES_TO →
+                      most urgent TriageCategory; plus the recommendation's confidence (it informs, never decides)
     ▼
- medical coordinator  sees the recommendation, its reasons and sources; accepts with one click or changes it
+ medical coordinator  sees the recommendation, its confidence, reasons and every source; accepts with one click or
+                      changes it
     ▼
  simulator            dispatches as today (triage_category, mobility)
 ```
@@ -270,12 +274,13 @@ cut to what the demo needs. Step 4 is a multi-hop graph query, which is what the
 | Piece | What it is | How we use it |
 |---|---|---|
 | Doctrine graph (`app/assets/graph/triage_v3.jsonl`, 472 nodes, 774 edges) | The triage **rules** from the TCCC handbook (and MOD guidelines), each line with page and quote: `Finding -INDICATES-> Injury -TRIAGES_TO-> TriageCategory`, plus treatments, who may do them and kit. Static: it never stores casualties. | Copied into the repo (`data/doctrine/triage_v3.jsonl`) and loaded into graph `evac` at build. Read-only. |
-| Engine (`app/src/triage/assess.ts`, `order.ts`) | Applies the rules to one casualty's yes answers: injuries, category, steps to do now, next question; then orders casualties with tie-break rules. | We use the one-casualty part only, as the queries Q1, Q2 and Q11 of `DECISION-SPEC.md`, in `scripts/fusion.py`. Ordering stays with our dispatch (triage, then time of injury). |
+| Engine (`app/src/triage/assess.ts`, `order.ts`) | Applies the rules to one casualty's answers, each `yes`, `no` or `unsure` (no numbers, no weights): an injury is found if **any** of its Findings is `yes`, or if **all** members of a `Condition` are; the category is the most urgent among the injuries (`null` = not ranked by doctrine, never "can wait"). Also steps to do now, next question, and an order across casualties (category, then its own tie-break rules). Only links that cite the TCCC handbook are used. | We use the one-casualty part only, as the queries Q1, Q2 and Q11 of `DECISION-SPEC.md`, in `scripts/fusion.py`. Ordering stays with our dispatch (triage, then time of injury). |
 | App (`app/src/app/`) | Phone app for a soldier with no medical training next to a casualty: big yes/no questions, recommendation on the spot, no network (TuringDB runs on the phone). | **A source.** Its answers are already `Finding` keys. With a connection it sends them (`observation` events, `source = 'app'`); without one, the soldier still gets the recommendation on the phone, and the answers are sent later with the time they were given. |
 
 So the doctrine graph is the medical brain for both: on the phone it reads one soldier's answers; in C2 it reads
-the fused findings from every source. Fusion's output (a set of present Findings) has the same shape as the app's
-input.
+the fused answers from every source. Fusion's output (`yes` / `no` / `unsure` per Finding) is exactly the engine's
+input, so its rules decide unchanged. The graph has no weights or probabilities: its edges carry only `basis`
+(`explicit`, `inferred`, `product_rule`) and sources (page, quote).
 
 **Vocabulary: Noo's `Finding` keys.** 37 come from the TCCC handbook, each with a MARCH letter. The ones the demo
 uses (they reach a category or matter for MARCH):
@@ -289,33 +294,53 @@ uses (they reach a category or matter for MARCH):
 | H hypothermia, head | `cold_shivering`, `head_injury_signs`, `mental_status_altered`, `decreased_level_of_consciousness` |
 | (ours) | `mobility`: walks or not. Not in the doctrine; it presets litter or ambulatory for dispatch. |
 
-**What each source can emit, and its weight** (weights and confidences are our assumptions, 7.13):
+**What each source can emit.** For every Finding it can see, a source answers `yes`, `no` or `unsure` (it could not
+tell: hidden, dark without thermal). There are no source weights.
 
-| Source | Emits | Typical confidence | Weight | In the demo |
-|---|---|---|---|---|
-| Drone camera | position (association), `mobility` = no (lying, still), `bleeding_severe` | 0.7–0.9 position and posture; 0.4–0.6 bleeding | 0.6 | SARD image with label "Lying"; findings written in the script |
-| Drone thermal | `cold_shivering`, `breathing_distress` | 0.3–0.5 | 0.6 | script |
-| Drone speaker and mic | `conscious` / `unconscious` ("can you hear me? raise a hand") | 0.6–0.8 | 0.6 | script, audio clip if there is time |
-| Soldier's triage app | any soldier-askable `Finding` | 0.9 (a person next to the casualty) | 0.9 | script, as if the app sent it |
-| Radio report (**future, not in the demo**) | `Finding`s extracted from a spoken report (MIST, 9-line): speech to text, then an LLM maps the text to `Finding` keys. The LLM only extracts findings; the doctrine rules still decide the category. | 0.8 | 0.8 | mentioned in the pitch as the next source (6.17) |
+| Source | Findings | Answer and confidence | In the demo |
+|---|---|---|---|
+| Drone camera | person lying (position, for association), `mobility`, `bleeding_severe` | yes / no / unsure, each yes or no with a confidence 0–1 (any value; e.g. lying 0.8, bleeding 0.5) | SARD image with label "Lying"; answers written in the script |
+| Drone thermal | `cold_shivering`, `breathing_distress` | same | script |
+| Drone speaker and mic | `conscious` / `unconscious` ("can you hear me? raise a hand") | same | script, audio clip if there is time |
+| Soldier's triage app | any soldier-askable Finding | yes / no / unsure, **no confidence**: a person next to the casualty answers. Internally a fixed 0.9, because the soldier has no medical training | script, as if the app sent it |
+| Radio report (**future, not in the demo**) | Findings extracted from a spoken report (MIST, 9-line): speech to text, then an LLM maps the text to Finding keys. The LLM only extracts findings; the doctrine rules still decide the category. | — | mentioned in the pitch as the next source (6.17) |
 
 Out: RF detection of phones (position only, nothing clinical); UGV sensors on arrival (later).
 
-**Fusion rule (step 3), per casualty and `Finding`:**
-- Keep only the newest observation of each source (by `at`, the time it was observed, not when it arrived).
-- Otherwise `support = 1 − Π(1 − weight × confidence)` over the observations saying yes, `against` the same over
-  those saying no, and `p = support × (1 − against)`. Two weak sources that agree give a strong `p`; a reliable "no"
-  pulls it down.
-- Write `(Casualty)-[:HAS_FINDING {p, sources, updated_at}]->(Finding)`. Present means `p >= 0.5`.
-- Example: drone 0.5 and app 0.9 say `bleeding_severe`: `1 − (1 − 0.6·0.5)(1 − 0.9·0.9) = 0.87`, present.
+**Fusion rule (step 3), per casualty and Finding.** Keep only the newest observation of each source (by `at`, the
+time it was observed, not when it arrived). Then:
+
+| What the sources say | Answer given to the engine | The coordinator sees |
+|---|---|---|
+| at least one `yes`, no `no` | `yes` | the Finding, its confidence and each source |
+| at least one `no`, no `yes` | `no` | — |
+| nothing, or only `unsure` | `unsure` | — |
+| one `yes` and another `no` | `unsure` | **"sources disagree"**, with each source and what it said (e.g. drone yes 0.8 · app no) |
+
+One `yes` is enough, as in the engine: a casualty seen only by the drone still gets a recommendation, so nobody
+alone is left behind. Write `(Casualty)-[:HAS_FINDING {answer, confidence, sources, disagree, updated_at}]->(Finding)`.
+
+**Confidence of the recommendation** (informs the coordinator; never changes the category):
+- `confidence = 1 − Π(1 − c)` over the sources answering `yes` to the Finding that sets the category (drone: its own
+  `c`; app: 0.9). If several Findings reach that category, the highest.
+- Shown as **high** ≥ 0.8, **medium** 0.5–0.8, **low** < 0.5, with the number (proposal, 7.13).
+
+| Case | Sources | To the engine | Recommendation | Confidence |
+|---|---|---|---|---|
+| CAS-6 | drone bleeding yes 0.5 + app bleeding yes | yes | T1 | 1 − (0.5 × 0.1) = 0.95, high |
+| CAS-7 | drone bleeding yes 0.5, nobody else | yes | T1 | 0.5, medium |
+| CAS-8 | app breathing distress yes | yes | what doctrine gives for it | 0.9, high |
+| CAS-9 | drone sees someone lying 0.8, nothing serious | `unsure` on the serious Findings | none: "coordinator decides" | — |
+| CAS-10 | drone bleeding yes 0.8 + app bleeding no | `unsure` | none from bleeding | "sources disagree: drone yes 0.8 · app no" |
 
 **Recommendation (step 4):**
-- Injuries = those `INDICATES` from a present `Finding` (Q1), plus those from a `Condition` whose member Findings
-  are all present (Q11).
-- Category = the most urgent `TRIAGES_TO` among them (Q2): `immediate` → T1, `delayed` → T2, `minimal` → T3,
-  `expectant` → shown as "Expectant" (the coordinator picks; 7.2).
-- Stored on the casualty: `recommended_category`, `recommended_rank`, `recommendation_reason` (the present Findings
-  with their sources and `p`, and the injuries they indicate).
+- Noo's engine logic, unchanged: injuries indicated by a Finding answered `yes` (Q1), plus those from a `Condition`
+  whose members are all `yes` (Q11); category = the most urgent `TRIAGES_TO` among them (Q2), using only links that
+  cite the TCCC handbook. `immediate` → T1, `delayed` → T2, `minimal` → T3, `expectant` → shown as "Expectant" (the
+  coordinator picks; 7.2).
+- Stored on the casualty: `recommended_category`, `recommended_rank`, `recommendation_confidence`,
+  `recommendation_reason` (the `yes` Findings with their sources and confidences, the injuries they indicate, and any
+  "sources disagree").
 - No category reached: "no recommendation: doctrine does not rank this, coordinator decides". Never "can wait"
   (`DECISION-SPEC.md` section 5).
 - Recomputed whenever an observation for that casualty is applied, so late information updates it.
@@ -325,8 +350,8 @@ goes to the nearest casualty within 50 m of its `lat, lon`; if none, it creates 
 (`status = 'reported'`, `event_id` set). Seen twice, counted once. Later, not now: time and position uncertainty.
 
 **On the C2 screen:** the queue puts untriaged casualties first, ordered by `recommended_rank`, then the MARCH letter
-of their most urgent present Finding, then time of injury. Each card shows the recommendation, its reasons and a
-chip per source (drone, app). The triage buttons come preselected with the recommendation (and litter or
+of their most urgent present Finding, then time of injury. Each card shows the recommendation, its confidence (high,
+medium, low, with the number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
 ambulatory from `mobility`): one click accepts, or the coordinator picks another.
 
 **Drone images (SARD).** The Search and Rescue Image Dataset (IEEE DataPort, DOI 10.21227/ahxm-k331): 1,981 drone
@@ -415,10 +440,15 @@ Each one: what we chose and why. Do not reopen without a new fact.
     - *Caveats:* nothing in the graph is clinically signed off yet; only 8 of 37 TCCC findings reach a category, so
       the demo uses findings that do (7.14).
     - *Rejected:* our own ad-hoc MARCH ranking (no clinical basis); a learned model (no data, not explainable).
-14. **Every source emits Noo's `Finding`s with a confidence, fused per casualty and Finding** (3 Oct), rule in
-    section 5. Fusion's output has the same shape as the app's input, so one brain serves the phone and C2.
-    - *Rejected:* a separate vocabulary per source (nothing could be combined); a Bayesian network tonight (the
-      next step, after the demo).
+14. **Every source answers Noo's `Finding`s with yes / no / unsure; fusion gives the engine one answer per Finding,
+    and the confidence only informs** (3 Oct; rule in section 5). One `yes` is enough (as in the engine), a `yes`
+    against a `no` becomes `unsure` shown as "sources disagree", and the coordinator sees a confidence for the
+    recommendation. The drone gives a confidence per answer; the app gives none (fixed 0.9 internally: a soldier
+    without medical training). No source weights.
+    - *Why:* we follow the triage system as it is (its input is yes / no / unsure, no numbers), without throwing away
+      how sure the sources are. Nobody seen only by the drone is left behind.
+    - *Rejected:* source weights (a second knob duplicating confidence); a probability threshold deciding the answer
+      (numbers to invent and explain); a Bayesian network tonight (the next step, after the demo).
 15. **Association, simple version, is in** (3 Oct): nearest casualty within 50 m, else a new one. Without it there is
     no fusion, only separate reports. Time and position uncertainty: later.
 16. **The medic never goes to the casualty; the data comes to the medic** (3 Oct). Medics stay at medical points and
@@ -487,7 +517,8 @@ To settle together. None blocks the demo now.
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
 
-13. **Source weights and confidences** (section 5) are our assumptions. To check with Noo and his frontline contact.
+13. **Confidence bands and drone confidences** (section 5): high ≥ 0.8, medium 0.5–0.8, low < 0.5, and the drone's
+    confidences in the demo script, are our proposal. To check with Noo and his frontline contact.
 14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
     (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
 
@@ -514,9 +545,9 @@ and gets them there, even when everything changes.
 
 1. **Information arrives from everywhere, and the system says who goes first.** 05:30: five casualties reported.
    ~05:36: a drone sees a sixth person lying still near the front (`observation`s: position, `mobility` = no,
-   `bleeding_severe` 0.5; no casualty there, so a new one is created). ~05:38: a soldier's triage app answers
-   "bleeding badly? yes" for the same person (`source = 'app'`, 0.9): fused, the card shows **T1 recommended:
-   bleeding badly (drone, app)**. ~05:40: the app reports another casualty struggling to breathe
+   `bleeding_severe` yes 0.5; already T1, confidence medium; no casualty there, so a new one is created). ~05:38: a soldier's triage app answers
+   "bleeding badly? yes" for the same person (`source = 'app'`): the card shows **T1 recommended, confidence high
+   (0.95): bleeding badly (drone 0.5, app)**. ~05:40: the app reports another casualty struggling to breathe
    (`breathing_distress`); the queue reorders. The coordinator accepts with one click each.
    *(Sensor fusion and Noo's doctrine graph.)*
 2. **The system gets each one to the right place.** Vehicles, routes, the UGV-to-ambulance relay, no manual
@@ -526,7 +557,8 @@ and gets them there, even when everything changes.
 4. **Close by answering objections.** "No network at the front?" The soldier's app gives the recommendation on the
    phone and sends when it can; the late answers fuse with their real time. "Who decides?" The coordinator; the
    system recommends from TCCC doctrine and shows why. "Other sources?" Radio: speech to text, an LLM extracts the
-   findings, and the same rules decide; any new source only has to produce findings. Optional: a voice question ("situation summary") and more
+   findings, and the same rules decide; any new source only has to produce findings. Future: the soldier's app
+   as a voice agent (pitch only). Optional: a voice question ("situation summary") and more
    UGVs (`vehicle_requested`).
 
 ### 8.2 How we work: everything that happens during a run is an event
@@ -569,9 +601,9 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   `feat/triage-app` to `data/doctrine/triage_v3.jsonl`. Load it in `scripts/build_graph.sh` after the scenario: with
   `LOAD JSONL` if TuringDB can load into an existing graph, else a small `scripts/seed_doctrine.py` that creates its
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
-- **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → `p` per Finding
+- **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → answer, confidence and disagreement per Finding
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
-  `tests/test_fusion.py`: drone 0.5 + app 0.9 on `bleeding_severe` gives `p` 0.87 and T1; an app "no" (0.9) pulls a drone "yes" (0.5) down to `p` 0.06;
+  `tests/test_fusion.py`: the five cases of the section 5 table (CAS-6 to CAS-10) give the answer, recommendation and confidence listed;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
 - **A2c. The `observation` handler** in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
   `OF`, re-fuse, write `HAS_FINDING` and the `recommended_*` fields. Reset: observations and the casualties they
