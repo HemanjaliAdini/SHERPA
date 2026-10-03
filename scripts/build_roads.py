@@ -26,8 +26,10 @@ AMBULANCE_KMH = {
     "unclassified": 40, "residential": 30, "service": 20, "track": 25,
     "connector": 10,  # synthetic edge bridging a small gap in OSM, see bridge_gaps()
 }
-MAX_GAP_M = 50  # road networks closer than this are treated as joined (OSM mapping gaps)
-GRID_DEG = 0.0008  # spatial hash cell, larger than MAX_GAP_M in both lat and lon here
+# Road networks closer than this are treated as joined (OSM mapping gaps). At 50, Robotyne was cut off by a
+# 50.4 m gap on the road north to Orikhiv.
+MAX_GAP_M = 60
+GRID_DEG = 0.001  # spatial hash cell, larger than MAX_GAP_M in both lat and lon here (~111 m x ~75 m)
 ANCHORS = {"INC-1": (47.445, 35.833), "R1-A": (47.560, 35.790), "R3-1": (47.820, 35.180)}  # sanity check
 UNPAVED_AMBULANCE_CAP_KMH = 30
 UGV_CAP_KMH = 25
@@ -176,6 +178,7 @@ def main() -> None:
             "surface": surface,
             "status": "open",
             "threat_level": 0.0,
+            "delay_factor": 1.0,
             "speed_ugv_kmh": ugv,
             "speed_ambulance_kmh": amb,
             "highway": tags["highway"],
@@ -198,7 +201,7 @@ def main() -> None:
             **{
                 k: [r[k] for r in rows]
                 for k in (
-                    "length_m", "surface", "status", "threat_level",
+                    "length_m", "surface", "status", "threat_level", "delay_factor",
                     "speed_ugv_kmh", "speed_ambulance_kmh", "highway", "bridge",
                 )
             },

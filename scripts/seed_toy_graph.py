@@ -8,6 +8,8 @@ import sys
 from turingdb import TuringDB
 
 from build_roads import AMBULANCE_KMH, UGV_CAP_KMH, haversine_m
+from cypher import lit, props
+from seed_scenario import CAPS
 
 GRAPH = sys.argv[1] if len(sys.argv) > 1 else "toy"
 
@@ -44,13 +46,6 @@ ROADS = [
     ("R2B", "MID", "trunk", "asphalt", False),
     ("MID", "R3", "trunk", "asphalt", False),
 ]
-CAPS = {
-    "ccp": ["first_aid"],
-    "handover": ["ugv_dock", "first_aid"],
-    "role1": ["first_aid", "stabilisation"],
-    "role2_basic": ["first_aid", "stabilisation", "surgery"],
-    "role3": ["first_aid", "stabilisation", "surgery", "icu"],
-}
 # id, name, type, junction, medics_available, free_beds
 MEDICAL_POINTS = [
     ("CCP-W", "Collection point West", "ccp", "CCPW", 1, 0),
@@ -63,12 +58,12 @@ MEDICAL_POINTS = [
     ("R2B-1", "Role 2 Basic", "role2_basic", "R2B", 5, 8),
     ("R3-1", "Role 3 Zaporizhzhia", "role3", "R3", 12, 20),
 ]
-# id, type, junction, litter, ambulatory, range_km, battery_pct, max_threat
+# id, type, junction, litter, ambulatory, range_km, battery_pct, max_threat, speed_kmh
 VEHICLES = [
-    ("UGV-1", "ugv", "HP1", 1, 0, 25.0, 90.0, 0.8),
-    ("UGV-2", "ugv", "HP1", 1, 0, 25.0, 75.0, 0.8),
-    ("AMB-1", "ambulance", "R1A", 4, 2, 300.0, 100.0, 0.4),
-    ("AMB-2", "ambulance", "R1A", 4, 2, 300.0, 100.0, 0.4),
+    ("UGV-1", "ugv", "HP1", 1, 0, 25.0, 90.0, 0.8, 20.0),
+    ("UGV-2", "ugv", "HP1", 1, 0, 25.0, 75.0, 0.8, 15.0),
+    ("AMB-1", "ambulance", "R1A", 4, 2, 300.0, 100.0, 0.4, 80.0),
+    ("AMB-2", "ambulance", "R1A", 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
 # id, lat, lon, time_of_injury, triage, mobility
 CASUALTIES = [
@@ -76,21 +71,6 @@ CASUALTIES = [
     ("CAS-2", 47.4400, 35.8100, "2023-09-12T04:25:00Z", "T2", "ambulatory"),
     ("CAS-3", 47.4380, 35.8600, "2023-09-12T04:40:00Z", "T1", "litter"),
 ]
-
-
-def lit(v) -> str:
-    """Cypher literal; TuringDB has no query parameters."""
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, str):
-        return "'" + v.replace("\\", "\\\\").replace("'", "\\'") + "'"
-    if isinstance(v, list):
-        return "[" + ", ".join(lit(x) for x in v) + "]"
-    return repr(v)
-
-
-def props(**kw) -> str:
-    return "{" + ", ".join(f"{k}: {v}" for k, v in kw.items()) + "}"
 
 
 def nearest_junction(lat: float, lon: float) -> tuple[str, float]:
@@ -111,7 +91,7 @@ def build_create() -> str:
             geom = f"{JUNCTIONS[s][0]:.6f},{JUNCTIONS[s][1]:.6f};{JUNCTIONS[t][0]:.6f},{JUNCTIONS[t][1]:.6f}"
             p = props(
                 id=lit(f"R-{k}-{d}"), geometry=lit(geom), length_m=length, surface=lit(surface),
-                status=lit("open"), threat_level=0.0, speed_ugv_kmh=ugv, speed_ambulance_kmh=amb,
+                status=lit("open"), threat_level=0.0, delay_factor=1.0, speed_ugv_kmh=ugv, speed_ambulance_kmh=amb,
                 highway=lit(hw), bridge=lit(bridge),
             )
             parts.append(f"({s})-[:ROAD {p}]->({t})")
@@ -131,13 +111,13 @@ def build_create() -> str:
         )
         near(v, lat, lon)
 
-    for vid, typ, j, litter, amb, rng, batt, max_threat in VEHICLES:
+    for vid, typ, j, litter, amb, rng, batt, max_threat, speed in VEHICLES:
         v = "v_" + vid.replace("-", "_")
         lat, lon = JUNCTIONS[j]
         parts.append(
             f"({v}:Vehicle "
             + props(id=lit(vid), type=lit(typ), lat=lat, lon=lon, litter_capacity=litter, ambulatory_capacity=amb,
-                    range_km=rng, battery_pct=batt, max_threat=max_threat, status=lit("idle"))
+                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"))
             + ")"
         )
         near(v, lat, lon)

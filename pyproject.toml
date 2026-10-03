@@ -6,6 +6,15 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "osmium>=4.3.1",
+    "pandas>=3.0.6",
     "pyarrow>=25.0.1",
     "turingdb>=3.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
