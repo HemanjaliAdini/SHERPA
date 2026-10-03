@@ -67,11 +67,14 @@ class Waiting(NamedTuple):
     junction: int
     mobility: str
     at_relay: bool  # already dropped at a handover or collection point: ambulances only
+    stranded: bool = False  # left in a vehicle that broke down (events.battery_depleted): picked up first
+    only_type: str | None = None  # a stranded casualty waits for the vehicle type it was left by, while one works
 
 
 Roads = dict[int, list[Road]]
 
-# Order of pickup: triage first, then time since injury. Untriaged and DEAD casualties are never dispatched.
+# Order of pickup: stranded casualties first (their transport broke down under them), then triage, then time since
+# injury. Untriaged and DEAD casualties are never dispatched.
 TRIAGE_ORDER = {"T1": 0, "T2": 1, "T3": 2}
 # Where each vehicle type takes casualties (same as DESTINATION_TYPES in planner.ts)
 DESTINATION_TYPES = {"ugv": ("handover", "ccp"), "ambulance": ("role1", "role2_basic", "role3")}
@@ -120,11 +123,11 @@ def can_carry(v: Vehicle, mobility: str) -> bool:
 
 
 def best_option(roads: Roads, casualty_junction: int, mobility: str, vehicles: list[Vehicle],
-                points: list[Point], at_relay: bool = False) -> Option | None:
+                points: list[Point], at_relay: bool = False, only_type: str | None = None) -> Option | None:
     """Fastest vehicle -> casualty -> medical point trip that can carry this casualty within range x battery."""
     best = None
     for v in vehicles:
-        if not can_carry(v, mobility) or (at_relay and v.type == "ugv"):
+        if not can_carry(v, mobility) or (at_relay and v.type == "ugv") or (only_type and v.type != only_type):
             continue
         pickup = route(roads, v.junction, casualty_junction, v.type, v.speed_kmh, v.max_threat)
         if pickup is None:
@@ -147,9 +150,9 @@ def dispatch(roads: Roads, waiting: list[Waiting], vehicles: list[Vehicle], poin
     left = dict(beds)
     plan = []
     for cas in sorted((w for w in waiting if w.triage in TRIAGE_ORDER),
-                      key=lambda w: (TRIAGE_ORDER[w.triage], w.injured_at)):
+                      key=lambda w: (not w.stranded, TRIAGE_ORDER[w.triage], w.injured_at)):
         open_points = [p for p in points if p.type in RELAY_TYPES or left.get(p.id, 0) > 0]
-        option = best_option(roads, cas.junction, cas.mobility, free, open_points, cas.at_relay)
+        option = best_option(roads, cas.junction, cas.mobility, free, open_points, cas.at_relay, cas.only_type)
         if option is None:
             continue
         free.remove(option.vehicle)
@@ -209,11 +212,14 @@ def dispatch_pass(client: TuringDB, now: datetime, roads: Roads | None = None) -
         "MATCH (c:Casualty)-[:HELD_AT]->(p:MedicalPoint) WHERE p.type = 'handover' OR p.type = 'ccp' "
         "RETURN c.id AS id"
     ))}
-    waiting = [Waiting(r["id"], r["triage"], r["toi"], int(r["j"]), r["mobility"], r["id"] in relayed)
+    # A stranded casualty lies where its vehicle type was sent (a UGV: the front), so it waits for that type
+    working = {r["type"] for r in rows(client, "MATCH (v:Vehicle) WHERE v.status <> 'disabled' RETURN v.type AS type")}
+    waiting = [Waiting(r["id"], r["triage"], r["toi"], int(r["j"]), r["mobility"], r["id"] in relayed,
+                       isinstance(r["stranded"], str), r["left_by"] if r["left_by"] in working else None)
                for r in rows(client, (
                    "MATCH (c:Casualty)-[:NEAR]->(j:Junction) WHERE c.status = 'awaiting_pickup' "
                    "RETURN c.id AS id, c.triage_category AS triage, c.mobility AS mobility, "
-                   "c.time_of_injury AS toi, id(j) AS j"
+                   "c.time_of_injury AS toi, c.stranded_by AS stranded, c.stranded_from AS left_by, id(j) AS j"
                ))]
     vehicles = [Vehicle(r["id"], r["type"], int(r["j"]), r["speed"], r["range"], r["litter"], r["amb"],
                         r["battery"], r["max_threat"])
@@ -228,7 +234,8 @@ def dispatch_pass(client: TuringDB, now: datetime, roads: Roads | None = None) -
     roads = load_roads(client) if roads is None else roads
     # Beds already promised to missions still on their way count as taken
     inflight = {r["id"]: int(r["n"]) for r in rows(client, (
-        "MATCH (m:Mission)-[:DELIVERS_TO]->(p:MedicalPoint) WHERE m.status <> 'done' RETURN p.id AS id, count(m) AS n"
+        "MATCH (m:Mission)-[:DELIVERS_TO]->(p:MedicalPoint) WHERE m.status <> 'done' AND m.status <> 'cancelled' "
+        "RETURN p.id AS id, count(m) AS n"
     ))}
     points, beds = [], {}
     for r in rows(client, (

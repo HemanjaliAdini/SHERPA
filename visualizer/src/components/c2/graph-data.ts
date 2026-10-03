@@ -55,9 +55,22 @@ export type GeoGraph = {
 
 const NODES_QUERY =
   'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, n.status, ' +
-  'n.progress_m'
+  'n.progress_m, n.stranded_by'
 // Simulator bookkeeping nodes have no place on the map
 const HIDDEN_LABELS = new Set(['Clock', 'SimControl'])
+// Missions no longer under way are left off the map; events appear once the simulator applies them
+const hiddenNode = (label: string, status: unknown) =>
+  HIDDEN_LABELS.has(label) ||
+  (label === 'Mission' && (status === 'done' || status === 'cancelled')) ||
+  (label === 'Event' && status !== 'applied' && status !== 'resolved')
+/** Map label of an applied event, by its type */
+export const EVENT_TAG: Record<string, string> = {
+  road_closed: 'road closed',
+  road_delayed: 'road slowed',
+  road_reopened: 'road reopened',
+  casualty_reported: 'new casualty',
+  battery_depleted: 'battery depleted',
+}
 const EDGES_QUERY =
   'MATCH (a)-[r]->(b) RETURN id(r), id(a), id(b), type(r), r.highway, r.threat_level, r.status, ' +
   'r.length_m, r.distance_m, r.speed_ugv_kmh, r.speed_ambulance_kmh, r.order, r.delay_factor'
@@ -79,10 +92,11 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
   const hidden = new Set<number>()
   const missionProgress = new Map<number, number>()
   for (const chunk of nodeData) {
-    const [nid, labels, id, lat, lon, type, triage, status, progress] = chunk as unknown[][]
+    const [nid, labels, id, lat, lon, type, triage, status, progress, stranded] =
+      chunk as unknown[][]
     for (let i = 0; i < nid.length; i++) {
       const label = (labels[i] as string[])[0] ?? ''
-      if (HIDDEN_LABELS.has(label) || (label === 'Mission' && status[i] === 'done')) {
+      if (hiddenNode(label, status[i])) {
         hidden.add(Number(nid[i]))
         continue
       }
@@ -90,9 +104,22 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
         nid: Number(nid[i]),
         label,
         id: str(id[i]),
-        kind: label === 'Casualty' ? str(triage[i]) : str(type[i]),
+        // A vehicle stopped by an event keeps its place but takes the 'disabled' colour
+        kind:
+          label === 'Casualty'
+            ? str(triage[i])
+            : label === 'Vehicle' && status[i] === 'disabled'
+              ? 'disabled'
+              : str(type[i]),
         status: str(status[i]),
-        tag: str(id[i]),
+        tag:
+          label === 'Event'
+            ? `${str(id[i])} ${EVENT_TAG[str(type[i])] ?? str(type[i])}`
+            : label === 'Vehicle' && status[i] === 'disabled'
+              ? `${str(id[i])} stopped`
+              : label === 'Casualty' && stranded[i]
+                ? `${str(id[i])} stranded`
+                : str(id[i]),
       }
       if (label === 'Mission') missionProgress.set(Number(nid[i]), Number(progress[i] ?? 0))
       if (lat[i] === null || lon[i] === null) pending.set(base.nid, base)
@@ -170,6 +197,22 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
         speedAmbulance: nullableNumber(ambulance[i]),
         delay: nullableNumber(delay[i]) ?? 1,
       })
+    }
+  }
+
+  // A casualty stranded in a stopped vehicle sits on it: one label for both, so they do not overprint
+  for (const v of nodes.values()) {
+    if (v.label !== 'Vehicle' || v.kind !== 'disabled') continue
+    for (const c of nodes.values()) {
+      if (
+        c.label === 'Casualty' &&
+        c.lat === v.lat &&
+        c.lon === v.lon &&
+        c.tag.endsWith(' stranded')
+      ) {
+        v.tag = `${v.tag}, ${c.tag}`
+        c.tag = ''
+      }
     }
   }
 
