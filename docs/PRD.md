@@ -50,6 +50,10 @@ Orikhiv–Robotyne–Zaporizhzhia, Zaporizhzhia oblast (Ukraine), box 47.40–47
 roads. Minor roads and tracks are included only near the front (47.40–47.62 N, 35.60–35.95 E). Main roads in view:
 T0408, T0803, T0812, T0815. Scenario time: September 2023 (Robotyne). The front line is at about 47.436 N.
 
+The roads are today's OpenStreetMap (2026), not the 2023 network: they reflect the area as the war has left it
+(damaged, rebuilt and newly mapped roads and bridges). This works in our favour: the scenario plays on the terrain
+as it is now.
+
 ![Scenario area around Orikhiv](area-orikhiv.png)
 
 ---
@@ -205,7 +209,7 @@ Each one: what we chose and why. Do not reopen without a new fact.
 
 ## 7. Open decisions
 
-To settle together (see the plan: "Together, first").
+To settle together. Only 7.8 (event format) blocks the MVP, as part of the simulator decisions (section 8, step 1).
 
 1. **Threat: one source of truth.** Today it is both `Threat-[:AFFECTS]->Junction` and `ROAD.threat_level`, and
    routing ignores both, so **ambulances are sent to the front**.
@@ -264,48 +268,69 @@ To settle together (see the plan: "Together, first").
 
 ## 8. Plan
 
-Status: ✅ done · 🟡 partly · ⬜ not started.
+Status as of **Saturday 3 Oct, 11:00**: ✅ done · 🟡 partly · ⬜ not started.
 
-**Together, first (about 30 min):** close the open decisions 7.1–7.4 and 7.8. They define fields and values that
-every layer reads or writes. After that, the layers can be built in parallel.
+**MVP = Layers 0–4** (gate: the full demo runs on screen without touching the terminal).
 
-**Layer 0: Foundation** 🟡
-- ✅ TuringDB running (`run.sh`).
-- ✅ OSM roads as `Junction` and `ROAD` (`fetch_osm.py` or `extract_pbf.py`, then `build_roads.py`).
-- ✅ Scenario placed on the real roads (`seed_scenario.py`).
-- ✅ Route search with computed travel time (`routing.py`, `tests/test_routing.py`).
-- ✅ One script that builds the graph end to end (`scripts/build_graph.sh`). Built and checked as `evac3`
-  (4,098 junctions, 9,142 roads): `MAX_GAP_M` raised from 50 to 60 m, because at 50 a 50.4 m OSM gap on the road
-  north of Robotyne cut the whole scenario area off the network.
-- **Gate:** on `evac2`, a route from a casualty's junction to a medical point returns minutes, and one change is
-  created, committed and submitted.
+**Where we are:** the static part works: real road map, scenario on it, a mission can be planned and stored from the
+operator screen. **Everything to do with time is missing**: nothing moves, nothing happens, nothing can be rewound.
+That is what sells the project (the golden hour, TuringDB's history), so it is the critical path.
 
-**Layer 1: Scenario and events** ⬜
-- Synthetic casualties with their MIST information, consistent with the triage labels (7.2).
-- A list of timed events (7.8): new reports, report updates, speed changes, delays, a bridge collapse, a point
-  overwhelmed or without power.
-- A loop applies the events that are due, re-runs `plan`, and commits once per tick.
+### Critical path to the MVP, in order
+
+1. **Simulator (Layer 1).** Blocks everything else. Decide first, together: whether vehicles move on the map, clock
+   speed, state life cycles, event format (7.8) and a shared scenario clock (today the UI clock is fixed at 05:30).
+   Each run starts from an initial commit of the graph instead of building a new graph.
+2. **Second leg:** when a UGV delivers at a handover point, the ambulance leg can be planned. Mostly falls out of 1.
+3. **One event end to end:** the bridge (7.9) collapses from a button in the UI, broken missions show, re-plan.
+4. **Time travel in the UI:** rewind to before the collapse. TuringDB's headline feature; weighs more in the demo
+   than branches.
+5. **Polish:** query time in ms on screen, a demo script.
+
+**Out of the MVP** (valuable, not needed to tell the story): "one more UGV" and the lives-saved metric (7.7), the
+threat zone (7.1), MIST and MITT clinical content (7.2–7.4), porting the fastest route into the C2 planner (7.12),
+the extra scenarios in `docs/SCENARIOS.md`.
+
+### Status by layer
+
+**Layer 0: Foundation** ✅
+- ✅ TuringDB and the C2 map start with `run.sh`.
+- ✅ OSM roads as `Junction` and `ROAD` (`build_roads.py`); `data/osm/roads.json` shared in the repo (pending merge).
+- ✅ Scenario on the real roads (`seed_scenario.py`): every entity on or near a junction, all 5 casualties reachable
+  by a UGV.
+- ✅ `scripts/build_graph.sh` builds the graph end to end. Current graph: `evac3` (4,098 junctions, 9,142 roads).
+  Graphs built before the `MAX_GAP_M = 60` fix have Robotyne cut off the network: rebuild under a new name.
+- ✅ Route search returning minutes (`routing.py`, 10 tests; and TuringDB `shortestPath` in the C2 planner).
+- **Gate:** met on `evac3`: a route from a casualty to a medical point returns minutes, and a mission is written as
+  one change, committed and submitted.
+
+**Layer 1: Simulator and events** ⬜
+- ⬜ Scenario clock shared by the simulator and the UI.
+- ⬜ Timed events (7.8). For the simple scenario only `casualty_report`; more types when needed.
+- ⬜ Tick loop: advance the clock, apply due events, move vehicles along their routes, pickups and deliveries,
+  update mission, casualty and vehicle states, one commit per tick.
 - **Gate:** the scenario plays from start to end, and `CALL db.history()` shows one commit per tick.
 
 **Layer 2: Missions** 🟡
-- ✅ `routing.py plan`: vehicle, pickup order, medical point and route for each casualty awaiting pickup, written as a
-  `Mission` with `ROUTE_STEP`s; "no resource" flag otherwise.
-- ✅ Checks on stretcher or seat capacity and on range.
-- ⬜ Threat check (7.1). Battery check beyond range.
+- ✅ C2 planner (`visualizer/src/components/c2/planner.ts`, `missions.ts`): ranks vehicles and destinations by road
+  time, preselects the best, checks capacity, range × battery and threat, several casualties per trip, writes the
+  `Mission` and its `ROUTE_STEP`s in one change. Checked on the real graph.
+- ⬜ Second leg (ambulance from the handover point): needs the simulator to deliver the casualty there first.
+- ⬜ Mission life cycle beyond `planned`; "no resource" is shown in the UI but not stored in the graph.
+- ⬜ Bug seen once: the planner showed UGV-1 selected and created the mission with AMB-1 (7.12). For Noo.
 - **Gate:** every category 1 casualty gets either a mission or a clear "no resource available" flag.
 
-**Layer 3: Changing events and versioning** 🟡
-- ✅ `routing.py close <osm_way_id>`: closes the road both ways and lists the broken missions.
-- ⬜ Re-plan the broken missions on a branch, compare with the current plan, submit.
-- ⬜ Time travel to a past commit, to audit what was known when each decision was made.
-- ⬜ Replay with one extra UGV on a branch, compared on the metric (7.7).
-- **Gate:** close the bridge on a branch, see the broken missions, re-plan, submit, and rewind to before the closure.
+**Layer 3: Changing events and versioning** ⬜
+- 🟡 `routing.py close <osm_way_id>` closes a road both ways and lists the broken missions (terminal only).
+- ⬜ Bridge collapse from the UI, re-plan of the broken missions.
+- ⬜ Time travel to a past commit in the UI.
+- ⬜ Branches and the "one more UGV" replay (out of the MVP).
+- **Gate:** close the bridge, see the broken missions, re-plan, and rewind to before the closure.
 
 **Layer 4: Map and operator screen** 🟡
-- ✅ C2 map page (`visualizer/`, `/c2`): offline basemap, roads coloured by threat, casualties, points, vehicles,
-  threats.
-- ✅ Missions drawn as their route line. The graph to show can be picked with `?graph=<name>` in the URL.
-- ⬜ Buttons for the main actions, and query time in milliseconds on screen.
+- ✅ C2 page: 2D and 3D map, casualty queue, mission planner, Cypher query bar with preset queries, node inspector,
+  mission routes drawn; graph picked with `?graph=<name>`.
+- ⬜ Clock controls (play, pause, step), event buttons, commit picker for time travel, query time in ms.
 - **Gate:** the full demo runs on screen without touching the terminal.
 
 **CUT LINE: freeze the core by Saturday 22:00** (the venue closes at 22:30)
@@ -318,11 +343,17 @@ every layer reads or writes. After that, the layers can be built in parallel.
 
 **Sunday until 12:00:** no new features. Record the demo video, finish the deck, and upload both well before 12:00.
 
-**How to split after "Together, first":**
-- one person on the scenario and events (Layer 1);
-- one on missions and versioning (Layers 2–3), on top of `routing.py`;
-- one on the map (Layer 4);
-- Noo on clinical realism: MIST reports, triage, medical point capabilities (7.2–7.4).
+**How to split once the simulator decisions are taken:**
+- simulator: clock, events, tick loop, vehicle movement (Layer 1);
+- missions and versioning in the C2 planner: second leg, life cycle, bridge collapse, re-plan (Layers 2–3);
+- operator screen: clock controls, event buttons, time travel (Layer 4);
+- clinical realism, after the MVP: MIST reports, triage labels, capabilities (7.2–7.4).
+
+**Parallel work once the common core exists** (simulator, states, events). Each item touches its own files and
+can be picked up by anyone:
+- **Terrain modelling** (`build_roads.py`, `fetch_osm.py`): off-road paths for UGVs (fields, footpaths), minor roads
+  and tracks across the whole sector (today only near the front), and better speeds per road class and surface
+  (today our own assumptions; OSM rarely has `maxspeed`).
 
 **Cleanup:** ✅ done (`main.py` deleted, `pandas` declared, README "how to run", Cypher helpers in
 `scripts/cypher.py`, `CAPS` in `seed_scenario.py`).
