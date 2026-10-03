@@ -1,22 +1,26 @@
-"""Route vehicles over the ROAD graph and plan evacuation missions (D1 and D2 in docs/DISCREPANCIES.md).
+"""Route vehicles over the ROAD graph and dispatch evacuation missions (PRD decisions 6.1, 6.2).
 
 Travel time is never stored. A road's time for one vehicle is
     length_m / min(vehicle speed_kmh, road cap for its type) * delay_factor
-computed during the search, so it follows the vehicle's own speed and the current delays. TuringDB has no
-shortestPath, so the search runs here (Dijkstra) on the open roads of the commit being read.
+computed during the search, so it follows the vehicle's own speed and the current delays. TuringDB's shortestPath
+takes one stored property as weight, so the per-vehicle search runs here (Dijkstra) on the open roads.
+
+Dispatch follows the C2 planner's rules (visualizer/src/components/c2/planner.ts): UGVs carry to a handover or
+collection point, ambulances to Role 1 or higher; the medic's triage sets the order. The simulator calls
+dispatch_pass() on every tick.
 
 Usage:
-  uv run python scripts/routing.py plan [graph]                 one mission per casualty awaiting pickup
+  uv run python scripts/routing.py plan [graph]                 one dispatch pass, as its own change
   uv run python scripts/routing.py close <osm_way_id> [graph]   close a road both ways, list broken missions
 """
 import heapq
 import math
 import sys
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from turingdb import TuringDB
 
-from build_roads import haversine_m
 from cypher import lit, props
 
 
@@ -26,6 +30,7 @@ class Road(NamedTuple):
     cap_ugv_kmh: float
     cap_ambulance_kmh: float
     delay_factor: float
+    threat_level: float = 0.0
 
 
 class Vehicle(NamedTuple):
@@ -36,12 +41,14 @@ class Vehicle(NamedTuple):
     range_km: float
     litter_capacity: int
     ambulatory_capacity: int
+    battery_pct: float = 100.0
+    max_threat: float = 1.0
 
 
 class Point(NamedTuple):
     id: str
     junction: int
-    capabilities: tuple[str, ...]
+    type: str
 
 
 class Option(NamedTuple):
@@ -50,15 +57,25 @@ class Option(NamedTuple):
     steps: list[int]
     minutes: float
     km: float
+    pickup_minutes: float
+
+
+class Waiting(NamedTuple):
+    id: str
+    triage: str
+    injured_at: datetime
+    junction: int
+    mobility: str
+    at_relay: bool  # already dropped at a handover or collection point: ambulances only
 
 
 Roads = dict[int, list[Road]]
 
-# Order of pickup: triage first, then time since injury
+# Order of pickup: triage first, then time since injury. Untriaged and DEAD casualties are never dispatched.
 TRIAGE_ORDER = {"T1": 0, "T2": 1, "T3": 2}
-# ponytail: clinical placeholder, to confirm with Noo together with D6 (MITT labels) and D7 (point types)
-REQUIRED_CAPABILITY = {"T1": "stabilisation", "T2": "stabilisation", "T3": "first_aid"}
-FALLBACK_JUNCTIONS = 3  # D2.6: if the NEAR junction has no way out (one-way roads), try the next nearest ones
+# Where each vehicle type takes casualties (same as DESTINATION_TYPES in planner.ts)
+DESTINATION_TYPES = {"ugv": ("handover", "ccp"), "ambulance": ("role1", "role2_basic", "role3")}
+RELAY_TYPES = ("handover", "ccp")  # points without beds where an ambulance takes over
 
 
 def edge_minutes(road: Road, vehicle_type: str, speed_kmh: float) -> float:
@@ -66,8 +83,11 @@ def edge_minutes(road: Road, vehicle_type: str, speed_kmh: float) -> float:
     return road.length_m / 1000 / min(speed_kmh, cap) * 60 * road.delay_factor
 
 
-def route(roads: Roads, src: int, dst: int, vehicle_type: str, speed_kmh: float):
-    """Fastest path for one vehicle as (junctions, minutes, km), or None if dst cannot be reached."""
+def route(roads: Roads, src: int, dst: int, vehicle_type: str, speed_kmh: float, max_threat: float = 1.0):
+    """Fastest path for one vehicle as (junctions, minutes, km), or None if dst cannot be reached.
+
+    Roads whose threat_level is above the vehicle's max_threat are not used.
+    """
     best = {src: 0.0}
     prev: dict[int, tuple[int, float]] = {}
     heap = [(0.0, src)]
@@ -78,6 +98,8 @@ def route(roads: Roads, src: int, dst: int, vehicle_type: str, speed_kmh: float)
         if t > best[node]:
             continue
         for road in roads.get(node, ()):
+            if road.threat_level > max_threat:
+                continue
             arrival = t + edge_minutes(road, vehicle_type, speed_kmh)
             if arrival < best.get(road.dst, math.inf):
                 best[road.dst] = arrival
@@ -97,23 +119,44 @@ def can_carry(v: Vehicle, mobility: str) -> bool:
     return v.litter_capacity > 0 or (mobility == "ambulatory" and v.ambulatory_capacity > 0)
 
 
-def best_option(roads: Roads, casualty_junction: int, mobility: str, required: str,
-                vehicles: list[Vehicle], points: list[Point]) -> Option | None:
-    """Fastest vehicle -> casualty -> medical point trip that can carry and treat this casualty."""
+def best_option(roads: Roads, casualty_junction: int, mobility: str, vehicles: list[Vehicle],
+                points: list[Point], at_relay: bool = False) -> Option | None:
+    """Fastest vehicle -> casualty -> medical point trip that can carry this casualty within range x battery."""
     best = None
-    for v in (v for v in vehicles if can_carry(v, mobility)):
-        pickup = route(roads, v.junction, casualty_junction, v.type, v.speed_kmh)
+    for v in vehicles:
+        if not can_carry(v, mobility) or (at_relay and v.type == "ugv"):
+            continue
+        pickup = route(roads, v.junction, casualty_junction, v.type, v.speed_kmh, v.max_threat)
         if pickup is None:
             continue
-        for p in (p for p in points if required in p.capabilities):
-            delivery = route(roads, casualty_junction, p.junction, v.type, v.speed_kmh)
+        for p in (p for p in points if p.type in DESTINATION_TYPES[v.type]):
+            delivery = route(roads, casualty_junction, p.junction, v.type, v.speed_kmh, v.max_threat)
             if delivery is None:
                 continue
             km = pickup[2] + delivery[2]
             minutes = pickup[1] + delivery[1]
-            if km <= v.range_km and (best is None or minutes < best.minutes):
-                best = Option(v, p, pickup[0] + delivery[0][1:], minutes, km)
+            if km <= v.range_km * v.battery_pct / 100 and (best is None or minutes < best.minutes):
+                best = Option(v, p, pickup[0] + delivery[0][1:], minutes, km, pickup[1])
     return best
+
+
+def dispatch(roads: Roads, waiting: list[Waiting], vehicles: list[Vehicle], points: list[Point],
+             beds: dict[str, int]) -> list[tuple[Waiting, Option]]:
+    """Give free vehicles to waiting casualties, most urgent first. A vehicle or a bed is used at most once."""
+    free = list(vehicles)
+    left = dict(beds)
+    plan = []
+    for cas in sorted((w for w in waiting if w.triage in TRIAGE_ORDER),
+                      key=lambda w: (TRIAGE_ORDER[w.triage], w.injured_at)):
+        open_points = [p for p in points if p.type in RELAY_TYPES or left.get(p.id, 0) > 0]
+        option = best_option(roads, cas.junction, cas.mobility, free, open_points, cas.at_relay)
+        if option is None:
+            continue
+        free.remove(option.vehicle)
+        if option.point.type not in RELAY_TYPES:
+            left[option.point.id] -= 1
+        plan.append((cas, option))
+    return plan
 
 
 # --- TuringDB side -------------------------------------------------------------------------------------------
@@ -123,90 +166,97 @@ def rows(client: TuringDB, query: str) -> list[dict]:
     return client.query(query).to_dict("records")
 
 
-def load_roads(client: TuringDB) -> tuple[Roads, dict[int, tuple[float, float]]]:
+def cypher_time(t: datetime) -> str:
+    return f"datetime('{t.strftime('%Y-%m-%dT%H:%M:%SZ')}')"
+
+
+def load_roads(client: TuringDB) -> Roads:
     roads: Roads = {}
     for r in rows(client, (
         "MATCH (a:Junction)-[r:ROAD]->(b:Junction) WHERE r.status <> 'closed' "
         "RETURN id(a) AS a, id(b) AS b, r.length_m AS len, r.speed_ugv_kmh AS ugv, "
-        "r.speed_ambulance_kmh AS amb, r.delay_factor AS delay"
+        "r.speed_ambulance_kmh AS amb, r.delay_factor AS delay, r.threat_level AS threat"
     )):
-        roads.setdefault(int(r["a"]), []).append(Road(int(r["b"]), r["len"], r["ugv"], r["amb"], r["delay"]))
-    coords = {int(r["j"]): (r["lat"], r["lon"])
-              for r in rows(client, "MATCH (j:Junction) RETURN id(j) AS j, j.lat AS lat, j.lon AS lon")}
-    return roads, coords
+        roads.setdefault(int(r["a"]), []).append(
+            Road(int(r["b"]), r["len"], r["ugv"], r["amb"], r["delay"], r["threat"] or 0.0))
+    return roads
 
 
-def nearest_junctions(coords: dict[int, tuple[float, float]], junction: int, k: int) -> list[int]:
-    here = coords[junction]
-    return sorted((j for j in coords if j != junction), key=lambda j: haversine_m(here, coords[j]))[:k]
-
-
-def write_mission(client: TuringDB, mission_id: str, casualty_id: str, option: Option, free_beds: int) -> None:
+def write_mission(client: TuringDB, mission_id: str, casualty_id: str, option: Option, now: datetime) -> None:
+    """Same shape as the C2 planner's missions.ts, so the UI reads system missions unchanged."""
     v, p = option.vehicle, option.point
-    mission = props(id=lit(mission_id), status=lit("planned"), eta_min=round(option.minutes, 1),
-                    distance_km=round(option.km, 2))
-    pickup = props(order=1, status=lit("pending"))
+    mission = props(id=lit(mission_id), status=lit("planned"), created_at=cypher_time(now),
+                    eta=cypher_time(now + timedelta(minutes=option.minutes)), progress_m=0.0)
+    pickup = props(order=1, status=lit("pending"), eta=cypher_time(now + timedelta(minutes=option.pickup_minutes)))
     client.query(
         f"MATCH (v:Vehicle {{id: {lit(v.id)}}}), (c:Casualty {{id: {lit(casualty_id)}}}), "
         f"(p:MedicalPoint {{id: {lit(p.id)}}}) "
-        f"CREATE (m:Mission {mission}), (m)-[:USES]->(v), (m)-[:PICKS_UP {pickup}]->(c), (m)-[:DELIVERS_TO]->(p)"
+        f"CREATE (m:Mission {mission}), (m)-[:USES]->(v), (m)-[:PICKS_UP {pickup}]->(c), (m)-[:DELIVERS_TO]->(p) "
+        f"SET v.status = 'tasked', c.status = 'assigned'"
     )
-    client.query(f"MATCH (v:Vehicle {{id: {lit(v.id)}}}) SET v.status = 'assigned'")
-    client.query(f"MATCH (c:Casualty {{id: {lit(casualty_id)}}}) SET c.status = 'assigned'")
-    client.query(f"MATCH (p:MedicalPoint {{id: {lit(p.id)}}}) SET p.free_beds = {free_beds}")
     client.query("COMMIT")  # the new Mission is invisible to the ROUTE_STEP queries until committed
     for order, junction in enumerate(option.steps, 1):
         client.query(
             f"MATCH (m:Mission {{id: {lit(mission_id)}}}) MATCH (j) WHERE j = {junction} "
             f"CREATE (m)-[:ROUTE_STEP {props(order=order)}]->(j)"
         )
+    client.query("COMMIT")  # so the same tick can read the route back and move the vehicle
 
 
-def plan(client: TuringDB) -> None:
-    """One mission per casualty awaiting pickup, most urgent first. The system decides all logistics (D2.4)."""
-    roads, coords = load_roads(client)
-    casualties = sorted(rows(client, (
-        "MATCH (c:Casualty)-[:NEAR]->(j:Junction) WHERE c.status = 'awaiting_pickup' "
-        "RETURN c.id AS id, c.triage_category AS triage, c.mobility AS mobility, c.time_of_injury AS toi, "
-        "id(j) AS j"
-    )), key=lambda c: (TRIAGE_ORDER[c["triage"]], c["toi"]))
-    vehicles = [Vehicle(r["id"], r["type"], int(r["j"]), r["speed"], r["range"], r["litter"], r["amb"])
+def dispatch_pass(client: TuringDB, now: datetime, roads: Roads | None = None) -> list[str]:
+    """One dispatch over the current graph, written inside the caller's change. Returns the new mission ids."""
+    relayed = {r["id"] for r in rows(client, (
+        "MATCH (c:Casualty)-[:HELD_AT]->(p:MedicalPoint) WHERE p.type = 'handover' OR p.type = 'ccp' "
+        "RETURN c.id AS id"
+    ))}
+    waiting = [Waiting(r["id"], r["triage"], r["toi"], int(r["j"]), r["mobility"], r["id"] in relayed)
+               for r in rows(client, (
+                   "MATCH (c:Casualty)-[:NEAR]->(j:Junction) WHERE c.status = 'awaiting_pickup' "
+                   "RETURN c.id AS id, c.triage_category AS triage, c.mobility AS mobility, "
+                   "c.time_of_injury AS toi, id(j) AS j"
+               ))]
+    vehicles = [Vehicle(r["id"], r["type"], int(r["j"]), r["speed"], r["range"], r["litter"], r["amb"],
+                        r["battery"], r["max_threat"])
                 for r in rows(client, (
                     "MATCH (v:Vehicle)-[:NEAR]->(j:Junction) WHERE v.status = 'idle' "
                     "RETURN v.id AS id, v.type AS type, v.speed_kmh AS speed, v.range_km AS range, "
-                    "v.litter_capacity AS litter, v.ambulatory_capacity AS amb, id(j) AS j"
+                    "v.litter_capacity AS litter, v.ambulatory_capacity AS amb, v.battery_pct AS battery, "
+                    "v.max_threat AS max_threat, id(j) AS j"
                 ))]
-    if any(v.speed_kmh is None for v in vehicles):
-        sys.exit("some Vehicle has no speed_kmh; reseed the scenario with the current seed_scenario.py")
-    beds, points = {}, []
+    if not waiting or not vehicles:
+        return []
+    roads = load_roads(client) if roads is None else roads
+    # Beds already promised to missions still on their way count as taken
+    inflight = {r["id"]: int(r["n"]) for r in rows(client, (
+        "MATCH (m:Mission)-[:DELIVERS_TO]->(p:MedicalPoint) WHERE m.status <> 'done' RETURN p.id AS id, count(m) AS n"
+    ))}
+    points, beds = [], {}
     for r in rows(client, (
         "MATCH (p:MedicalPoint)-[:NEAR]->(j:Junction) WHERE p.state = 'operational' "
-        "RETURN p.id AS id, p.capabilities AS caps, p.free_beds AS beds, id(j) AS j"
+        "RETURN p.id AS id, p.type AS type, p.free_beds AS beds, id(j) AS j"
     )):
-        beds[r["id"]] = int(r["beds"])
-        points.append(Point(r["id"], int(r["j"]), tuple(r["caps"])))
-    taken = int(rows(client, "MATCH (m:Mission) RETURN count(m) AS n")[0]["n"])  # next mission id
+        points.append(Point(r["id"], int(r["j"]), r["type"]))
+        beds[r["id"]] = int(r["beds"]) - inflight.get(r["id"], 0)
+    count = int(rows(client, "MATCH (m:Mission) RETURN count(m) AS n")[0]["n"])
+    created = []
+    for cas, option in dispatch(roads, waiting, vehicles, points, beds):
+        count += 1
+        write_mission(client, f"M-{count}", cas.id, option, now)
+        created.append(f"M-{count}")
+        print(f"{cas.id} ({cas.triage}): M-{count} {option.vehicle.id} -> {option.point.id}, "
+              f"{option.minutes:.0f} min, {option.km:.1f} km", flush=True)
+    return created
 
+
+def read_clock(client: TuringDB) -> datetime:
+    return rows(client, "MATCH (k:Clock) RETURN k.now AS now")[0]["now"].to_pydatetime()
+
+
+def plan(client: TuringDB) -> None:
+    """One dispatch pass as its own change, at the scenario clock's time."""
     client.new_change()
     try:
-        for cas in casualties:
-            open_points = [p for p in points if beds[p.id] > 0]
-            option = None
-            for j in [int(cas["j"]), *nearest_junctions(coords, int(cas["j"]), FALLBACK_JUNCTIONS)]:
-                option = best_option(roads, j, cas["mobility"], REQUIRED_CAPABILITY[cas["triage"]],
-                                     vehicles, open_points)
-                if option:
-                    break
-            if option is None:
-                client.query(f"MATCH (c:Casualty {{id: {lit(cas['id'])}}}) SET c.status = 'no_resource'")
-                print(f"{cas['id']} ({cas['triage']}): no resource available")
-                continue
-            taken += 1
-            beds[option.point.id] -= 1
-            vehicles.remove(option.vehicle)
-            write_mission(client, f"M-{taken}", cas["id"], option, beds[option.point.id])
-            print(f"{cas['id']} ({cas['triage']}): M-{taken} {option.vehicle.id} -> {option.point.id}, "
-                  f"{option.minutes:.0f} min, {option.km:.1f} km, {len(option.steps)} junctions")
+        dispatch_pass(client, read_clock(client))
         client.query("COMMIT")
         client.query("CHANGE SUBMIT")
     except Exception:

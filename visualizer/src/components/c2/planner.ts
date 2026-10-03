@@ -48,7 +48,7 @@ async function roadLeg(
   graph: GeoGraph,
   graphName: string,
   change: string | undefined,
-  vehicleType: string,
+  vehicle: { type: string; speedKmh: number | null },
   from: { label: string; junction: number },
   to: { label: string; junction: number }
 ): Promise<Leg | null> {
@@ -72,13 +72,15 @@ async function roadLeg(
     if (i === undefined) return
     const e = graph.edges[i]
     const metres = e.metres ?? 0
-    const kmh =
-      (vehicleType === 'ugv' ? e.speedUgv : e.speedAmbulance) ??
-      FALLBACK_KMH[vehicleType as keyof typeof FALLBACK_KMH] ??
+    // Same time as the simulator: the vehicle's own speed, capped by the road for its type, times the delay
+    const cap =
+      (vehicle.type === 'ugv' ? e.speedUgv : e.speedAmbulance) ??
+      FALLBACK_KMH[vehicle.type as keyof typeof FALLBACK_KMH] ??
       20
+    const kmh = Math.min(cap, vehicle.speedKmh ?? cap)
     leg.edges.push(i)
     leg.metres += metres
-    leg.minutes += metres / 1000 / (kmh / 60)
+    leg.minutes += (metres / 1000 / (kmh / 60)) * e.delay
     leg.maxThreat = Math.max(leg.maxThreat, e.threat)
   })
   return leg
@@ -119,7 +121,7 @@ export async function rankVehicles(
         graph,
         graphName,
         change,
-        v.type,
+        v,
         { label: v.id, junction: v.junction },
         {
           label: first.id,
@@ -164,7 +166,7 @@ export async function rankFacilities(
         graph,
         graphName,
         change,
-        vehicle.type,
+        vehicle,
         { label: last.id, junction: last.junction },
         {
           label: f.id,
@@ -204,7 +206,7 @@ export async function buildPlan(
       graph,
       graphName,
       change,
-      vehicle.type,
+      vehicle,
       stops[k] as { label: string; junction: number },
       stops[k + 1] as { label: string; junction: number }
     )

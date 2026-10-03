@@ -446,6 +446,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     data &&
       new ScatterplotLayer<GraphNode>({
         id: 'entities',
+        // vehicles and casualties in transit slide to their new position between ticks
+        transitions: { getPosition: 900 },
         data: data.entities,
         pickable: true,
         radiusUnits: 'pixels',
@@ -498,6 +500,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     data &&
       new TextLayer<GraphNode>({
         id: 'entity-labels',
+        // vehicles and casualties in transit slide to their new position between ticks
+        transitions: { getPosition: 900 },
         data: data.entities,
         getPosition: ground,
         getText: (n) => n.id,

@@ -104,6 +104,18 @@ function nodeLook(n: GraphNode, anchors: Set<number>): NodeLook {
   }
 }
 
+const SLIDE_MS = 900 // a little under one tick at 1x
+
+function slide(marker: L.CircleMarker, from: L.LatLng, to: L.LatLng) {
+  const start = performance.now()
+  const step = (t: number) => {
+    const k = Math.min((t - start) / SLIDE_MS, 1)
+    marker.setLatLng([from.lat + (to.lat - from.lat) * k, from.lng + (to.lng - from.lng) * k])
+    if (k < 1) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+
 export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
   { graph, selection, onSelectNode, graphName, change, fitRequest },
   ref
@@ -236,10 +248,17 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     const ordered = [...graph.nodes.values()].sort(
       (x, y) => Number(x.label !== 'Junction') - Number(y.label !== 'Junction')
     )
+    // Where each node was drawn before this refresh, so moving vehicles slide instead of jumping
+    const previous = new Map(
+      [...nodeMarkers.current].map(([nid, { marker }]) => [nid, marker.getLatLng()])
+    )
     nodeMarkers.current = new Map()
     for (const n of ordered) {
       const look = nodeLook(n, anchors)
-      const marker = L.circleMarker([n.lat, n.lon], { ...look.style, radius: look.radius })
+      const from = n.label === 'Junction' ? undefined : previous.get(n.nid)
+      const marker = L.circleMarker(from ?? [n.lat, n.lon], { ...look.style, radius: look.radius })
+      if (from && (from.lat !== n.lat || from.lng !== n.lon))
+        slide(marker, from, L.latLng(n.lat, n.lon))
       if (n.label !== 'Junction') {
         marker.bindTooltip(n.id, {
           permanent: true,
