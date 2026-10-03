@@ -230,7 +230,8 @@ To settle together (see the plan: "Together, first").
      extra vehicle, compared with the base on this metric.
 8. **Event format** for Layer 1: what a timed event looks like (time, type, payload). It must include speed changes
    and delays, not only new casualties and closures, or the demo never shows travel time changing.
-9. **The bridge for the collapse event:** one real OSM bridge (`bridge = true`) on the main road north from Robotyne.
+9. **The bridge for the collapse event:** proposal `osm_way_id` 1297140381, the secondary road Robotyne → Orikhiv,
+   about 500 m north of HP-1 (47.505 N, 35.813 E); mission routes from the front already cross it.
 10. **UGV to ambulance relay.** In `routing.py` a mission is one vehicle. The C2 planner already sends UGVs to a
     `handover` point (or a collection point) and ambulances to Role 1+; adopt that rule everywhere. UGVs have 25 km range and no point with
     `stabilisation` is within reach by real road, so on `evac3` the T2 casualties get "no resource" while UGV-2 sits
@@ -252,7 +253,8 @@ To settle together (see the plan: "Together, first").
     | Vehicle status set | `assigned` | `tasked` |
     | Mission time fields | `eta_min`, `distance_km` | `created_at`, `eta` (datetime) |
 
-    - *Proposal:* the C2 planner is the product (the demo runs on screen). Port into it the fastest route with
+    - *Decided (3 Oct):* keep the C2 planner as the product (the demo runs on screen).
+    - *Still to do:* port into it the fastest route with
       per-vehicle speed and `delay_factor`. Keep `routing.py` for `close` and for tests, or retire it. Align status and
       time fields on the C2 planner's (`tasked`, `eta` datetime).
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
