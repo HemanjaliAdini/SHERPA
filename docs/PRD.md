@@ -239,10 +239,16 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 The aim: several imperfect sources about the same casualty become **one recommended triage category, with its
 reasons**, fast, for the medical coordinator to accept or change. Rules, not a learned model (6.13).
 
+**Principle: the medic never goes to the casualty; the casualty's data comes to the medic** (6.16). A medic is a
+life we cannot risk at the front, so medics work only at medical points, deciding. No source is a medic examining
+someone: what reaches the coordinator is what drones, the soldiers on the spot (with the triage app) and radio
+reports can gather. The coordinator's decision is the triage itself (accept or change the recommendation), not an
+observation.
+
 **The chain, end to end:**
 
 ```
- sources              drone (camera, thermal, speaker+mic) · soldier's triage app · radio report · medic
+ sources              drone (camera, thermal, speaker+mic) · soldier's triage app · radio report   (never a medic)
     │  each emits Observations: one doctrine Finding, yes/no, a confidence, a time, a position
     ▼
  1 clean              raw data → Finding ("person lying, red patch on leg" → bleeding_severe = yes, 0.5)
@@ -292,13 +298,11 @@ uses (they reach a category or matter for MARCH):
 | Drone speaker and mic | `conscious` / `unconscious` ("can you hear me? raise a hand") | 0.6–0.8 | 0.6 | script, audio clip if there is time |
 | Soldier's triage app | any soldier-askable `Finding` | 0.9 (a person next to the casualty) | 0.9 | script, as if the app sent it |
 | Radio report | `Finding`s from a spoken MIST or 9-line report, by keyword (C1) | 0.8 | 0.8 | Adini's radio, Parakeet speech to text |
-| Medic in person | any `Finding` | 1.0 | overrides | the coordinator's own confirmation |
 
 Out: RF detection of phones (position only, nothing clinical); UGV sensors on arrival (later).
 
 **Fusion rule (step 3), per casualty and `Finding`:**
 - Keep only the newest observation of each source (by `at`, the time it was observed, not when it arrived).
-- A medic observation decides the value outright.
 - Otherwise `support = 1 − Π(1 − weight × confidence)` over the observations saying yes, `against` the same over
   those saying no, and `p = support × (1 − against)`. Two weak sources that agree give a strong `p`; a reliable "no"
   pulls it down.
@@ -417,6 +421,9 @@ Each one: what we chose and why. Do not reopen without a new fact.
       next step, after the demo).
 15. **Association, simple version, is in** (3 Oct): nearest casualty within 50 m, else a new one. Without it there is
     no fusion, only separate reports. Time and position uncertainty: later.
+16. **The medic never goes to the casualty; the data comes to the medic** (3 Oct). Medics stay at medical points and
+    decide; they are too valuable to send forward to measure. So no fusion source is a medic examination: drones, the
+    soldiers on the spot with the triage app, and radio reports. This is why sensor fusion exists in this product.
 
 ---
 
@@ -561,7 +568,7 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
 - **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → `p` per Finding
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
-  `tests/test_fusion.py`: drone 0.5 + radio 0.7 on `bleeding_severe` gives `p` 0.69 and T1; a medic "no" overrides;
+  `tests/test_fusion.py`: drone 0.5 + radio 0.7 on `bleeding_severe` gives `p` 0.69 and T1; an app "no" (0.9) pulls a drone "yes" (0.5) down to `p` 0.06;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
 - **A2c. The `observation` handler** in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
   `OF`, re-fuse, write `HAS_FINDING` and the `recommended_*` fields. Reset: observations and the casualties they
