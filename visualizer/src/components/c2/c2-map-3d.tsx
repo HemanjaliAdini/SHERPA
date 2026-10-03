@@ -3,10 +3,13 @@
 import {
   type Color,
   FlyToInterpolator,
+  LinearInterpolator,
   type MapViewState,
   type PickingInfo,
   WebMercatorViewport,
 } from '@deck.gl/core'
+import { _TerrainExtension as TerrainExtension } from '@deck.gl/extensions'
+import { TerrainLayer } from '@deck.gl/geo-layers'
 import { GeoJsonLayer, LineLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import DeckGL from '@deck.gl/react'
 import {
@@ -37,6 +40,13 @@ import {
 import type { GeoGraph, GraphEdge, GraphNode } from './graph-data'
 import { inspectNode } from './inspector'
 import type { Selection } from './selection'
+import {
+  type HeightAt,
+  TERRAIN_IMAGE,
+  type TerrainMeta,
+  loadHeightSampler,
+  loadTerrainMeta,
+} from './terrain-sampler'
 import { HOME_BOUNDS, HOME_PADDING } from './view'
 
 type Props = {
@@ -48,11 +58,13 @@ type Props = {
   change: string | undefined
   /** Incremented to ask the map to fly to the current selection (e.g. after a query) */
   fitRequest: number
+  /** Terrain height exaggeration; 0 draws the map flat */
+  terrainScale?: number
 }
 
 type ViewState = MapViewState & {
   transitionDuration?: number | 'auto'
-  transitionInterpolator?: FlyToInterpolator
+  transitionInterpolator?: FlyToInterpolator | LinearInterpolator
   onTransitionEnd?: () => void
 }
 
@@ -62,6 +74,10 @@ const BEARING = -15
 const VILLAGE_LABEL_MIN_ZOOM = 11
 const DIMMED = 0.12
 const ORBIT_DEG_PER_SEC = 6
+// Double-tap Shift+Up: tilt smoothly to look straight down, keeping position, zoom and bearing;
+// double-tap Shift+Down returns to the view from before
+const TOP_DOWN_MS = 600
+const TOP_DOWN_INTERPOLATOR = new LinearInterpolator(['pitch'])
 function rgba(color: string, alpha = 1): [number, number, number, number] {
   const a = Math.round(alpha * 255)
   if (color.startsWith('#')) {
@@ -89,6 +105,10 @@ type Basemap = Record<
 type Place = { position: [number, number]; name: string; major: boolean }
 
 let basemapPromise: Promise<Basemap> | null = null
+const TERRAIN_EXTENSIONS = [new TerrainExtension()]
+// Terrain mesh tolerance in real metres (scaled by the exaggeration where it is used)
+const TERRAIN_MESH_ERROR_M = 4
+
 function loadBasemap(): Promise<Basemap> {
   const names = ['forest', 'builtup', 'water', 'rivers', 'railways', 'places'] as const
   basemapPromise ??= Promise.all(
@@ -106,7 +126,7 @@ function fitHome(width: number, height: number) {
 }
 
 export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
-  { graph, selection, onSelectNode, graphName, change, fitRequest },
+  { graph, selection, onSelectNode, graphName, change, fitRequest, terrainScale = 0 },
   ref
 ) {
   const container = useRef<HTMLDivElement>(null)
@@ -121,14 +141,25 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     maxPitch: 75,
   })
   const [basemap, setBasemap] = useState<Basemap | null>(null)
+  const [terrain, setTerrain] = useState<TerrainMeta | null>(null)
+  const [heightAt, setHeightAt] = useState<HeightAt | null>(null)
   const [orbiting, setOrbiting] = useState(false)
   const [inspector, setInspector] = useState<string | null>(null)
   const inspectToken = useRef(0)
   const flying = useRef(false)
+  const beforeTopDown = useRef<ViewState | null>(null)
 
   useEffect(() => {
     let cancelled = false
     loadBasemap().then((b) => !cancelled && setBasemap(b))
+    loadTerrainMeta()
+      .then(async (t) => {
+        if (cancelled) return
+        setTerrain(t)
+        const sampler = await loadHeightSampler(t)
+        if (!cancelled) setHeightAt(() => sampler)
+      })
+      .catch(() => undefined) // no terrain built: the map stays flat
     return () => {
       cancelled = true
     }
@@ -227,7 +258,6 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       zoom: Math.min(v.maxZoom ?? 16, Math.max(v.minZoom ?? 8, v.zoom + delta)),
     }))
 
-  // Same commands as the 2D map, so the page's big buttons and keys work in both views
   // Arrow keys: move the camera across the ground in screen directions, so "up" is always
   // away from the viewer whatever the camera bearing
   const pan = (dx: number, dy: number) =>
@@ -257,6 +287,38 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     pan,
     rotate: (degrees) => turn(degrees, 0),
     tilt: (degrees) => turn(0, degrees),
+    topDown: () =>
+      setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => {
+        // Remember where we were looking, so double-tap Shift+Down can come back to it
+        if ((v.pitch ?? 0) > 0) beforeTopDown.current = v
+        return {
+          ...v,
+          pitch: 0,
+          transitionDuration: TOP_DOWN_MS,
+          transitionInterpolator: TOP_DOWN_INTERPOLATOR,
+        }
+      }),
+    restoreView: () => {
+      const saved = beforeTopDown.current
+      beforeTopDown.current = null
+      setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => ({
+        ...v,
+        // Without a saved view, just tilt back to the standard angle where we are
+        ...(saved
+          ? {
+              longitude: saved.longitude,
+              latitude: saved.latitude,
+              zoom: saved.zoom,
+              bearing: saved.bearing,
+              pitch: saved.pitch,
+            }
+          : { pitch: PITCH }),
+        transitionDuration: TOP_DOWN_MS,
+        transitionInterpolator: saved
+          ? new FlyToInterpolator({ speed: 1.4 })
+          : TOP_DOWN_INTERPOLATOR,
+      }))
+    },
   }))
 
   // Fly to the selection on request, so a query result is brought into view
@@ -323,7 +385,6 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     () => (data && selection ? data.entities.filter((n) => selection.nodes.has(n.nid)) : []),
     [data, selection]
   )
-  const ground = (n: GraphNode): [number, number] => [n.lon, n.lat]
 
   const nodeAlpha = (nid: number) => (!selection || selection.nodes.has(nid) ? 1 : DIMMED)
   const edgeLook = (i: number): { color: Color; width: number } => {
@@ -335,7 +396,42 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     return { color: rgba(edgeColor(e), DIMMED), width }
   }
 
+  // Terrain and the draped basemap show as soon as the small metadata file loads; clickable
+  // layers move up onto it once the height sampler is ready (they draw on top either way)
+  const terrainOn = terrain !== null && terrainScale > 0
+
+  const drape = terrainOn ? { extensions: TERRAIN_EXTENSIONS } : {}
+  // deck.gl does not rebuild a layer when its extensions change, so draped and flat layers get
+  // different ids and toggling terrain swaps them cleanly
+  const layerId = (name: string) => (terrainOn ? `${name}@terrain` : name)
+  // Ground position of a point, on the exaggerated terrain when it is shown
+  const lift = (lon: number, lat: number): [number, number, number] => [
+    lon,
+    lat,
+    terrainOn && heightAt ? heightAt(lon, lat) * terrainScale : 0,
+  ]
+  const ground = (n: GraphNode) => lift(n.lon, n.lat)
+  const placed = [terrainOn, terrainScale, heightAt]
   const layers = [
+    terrainOn &&
+      new TerrainLayer({
+        id: 'terrain',
+        elevationData: TERRAIN_IMAGE,
+        bounds: terrain.bounds,
+        // Exaggerate by scaling the decoded height: k * (r*R + g*G + b*B + offset)
+        elevationDecoder: {
+          rScaler: terrain.decoder.rScaler * terrainScale,
+          gScaler: terrain.decoder.gScaler * terrainScale,
+          bScaler: terrain.decoder.bScaler * terrainScale,
+          offset: terrain.decoder.offset * terrainScale,
+        },
+        texture: null,
+        color: [24, 33, 44],
+        // Error is in exaggerated metres: keep ~4 real metres at any exaggeration, or the mesh
+        // gets far more triangles than the 60 m cells can show and takes seconds to build
+        meshMaxError: TERRAIN_MESH_ERROR_M * terrainScale,
+        operation: 'terrain+draw',
+      }),
     ...(basemap
       ? (
           [
@@ -346,7 +442,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         ).map(
           ([name, style]) =>
             new GeoJsonLayer({
-              id: `basemap-${name}`,
+              id: layerId(`basemap-${name}`),
               data: basemap[name],
               filled: true,
               stroked: true,
@@ -354,6 +450,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
               getLineColor: rgba(style.color),
               lineWidthUnits: 'pixels',
               getLineWidth: style.weight,
+              ...drape,
               parameters: GROUND,
             })
         )
@@ -367,53 +464,66 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         ).map(
           ([name, style]) =>
             new GeoJsonLayer({
-              id: `basemap-${name}`,
+              id: layerId(`basemap-${name}`),
               data: basemap[name],
               filled: false,
               getLineColor: rgba(style.color, style.opacity),
               lineWidthUnits: 'pixels',
               getLineWidth: style.weight,
+              ...drape,
               parameters: GROUND,
             })
         )
       : []),
     new ScatterplotLayer<Place>({
-      id: 'places',
+      id: layerId('places'),
       data: places,
       radiusUnits: 'pixels',
       getRadius: (p) => (p.major ? 3 : 2),
       getPosition: (p) => p.position,
       getFillColor: (p) => rgba(p.major ? '#dbe4ee' : '#8b9bb0', 0.8),
+      ...drape,
       parameters: GROUND,
     }),
     data &&
       graph &&
       new LineLayer<number>({
-        id: 'roads',
+        id: layerId('roads'),
         data: data.roads,
         widthUnits: 'pixels',
         getSourcePosition: (i) => ground(graph.nodes.get(graph.edges[i].src) as GraphNode),
         getTargetPosition: (i) => ground(graph.nodes.get(graph.edges[i].dst) as GraphNode),
         getColor: (i) => edgeLook(i).color,
         getWidth: (i) => edgeLook(i).width,
-        updateTriggers: { getColor: selection, getWidth: selection },
+        updateTriggers: {
+          getPosition: placed,
+          getSourcePosition: placed,
+          getTargetPosition: placed,
+          getPath: placed,
+          getColor: selection,
+          getWidth: selection,
+        },
         parameters: GROUND,
       }),
     data &&
       new ScatterplotLayer<GraphNode>({
-        id: 'junctions',
+        id: layerId('junctions'),
         data: data.junctions,
         pickable: true,
         radiusUnits: 'pixels',
         stroked: true,
         lineWidthUnits: 'pixels',
-        getPosition: (n) => [n.lon, n.lat],
+        getPosition: ground,
         getRadius: (n) =>
           (data.anchors.has(n.nid) ? 3.5 : 1.8) + (selection?.nodes.has(n.nid) ? 1.5 : 0),
         getFillColor: (n) => rgba(nodeColor(n.label, n.kind), nodeAlpha(n.nid)),
         getLineColor: (n) => rgba('#dbe4ee', nodeAlpha(n.nid)),
         getLineWidth: (n) => (data.anchors.has(n.nid) ? 1.5 : 0),
         updateTriggers: {
+          getPosition: placed,
+          getSourcePosition: placed,
+          getTargetPosition: placed,
+          getPath: placed,
           getRadius: selection,
           getFillColor: selection,
           getLineColor: selection,
@@ -423,31 +533,39 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     // Mission routes, through their ROUTE_STEP junctions in order
     data &&
       new PathLayer<{ color: string; path: [number, number][] }>({
-        id: 'mission-routes',
+        id: layerId('mission-routes'),
         data: data.routes,
         widthUnits: 'pixels',
-        getPath: (r) => r.path,
+        getPath: (r) => r.path.map(([lon, lat]) => lift(lon, lat)),
         getWidth: MISSION_ROUTE_STYLE.weight,
         getColor: (r) => rgba(r.color, MISSION_ROUTE_STYLE.opacity),
+        updateTriggers: { getPath: placed },
         parameters: GROUND,
       }),
     // NEAR / AFFECTS and mission links between nodes
     data &&
       graph &&
       new LineLayer<number>({
-        id: 'links',
+        id: layerId('links'),
         data: data.links,
         widthUnits: 'pixels',
         getSourcePosition: (i) => ground(graph.nodes.get(graph.edges[i].src) as GraphNode),
         getTargetPosition: (i) => ground(graph.nodes.get(graph.edges[i].dst) as GraphNode),
         getColor: (i) => edgeLook(i).color,
         getWidth: (i) => edgeLook(i).width,
-        updateTriggers: { getColor: selection, getWidth: selection },
+        updateTriggers: {
+          getPosition: placed,
+          getSourcePosition: placed,
+          getTargetPosition: placed,
+          getPath: placed,
+          getColor: selection,
+          getWidth: selection,
+        },
         parameters: GROUND,
       }),
     data &&
       new ScatterplotLayer<GraphNode>({
-        id: 'entities',
+        id: layerId('entities'),
         // vehicles and casualties in transit slide to their new position between ticks
         transitions: { getPosition: 900 },
         data: data.entities,
@@ -457,18 +575,26 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         stroked: true,
         lineWidthUnits: 'pixels',
         getLineWidth: 2,
-        getPosition: (n) => [n.lon, n.lat],
+        getPosition: ground,
         getFillColor: (n) => rgba(nodeColor(n.label, n.kind), nodeAlpha(n.nid)),
         // Same as 2D: white outline when the position is derived from neighbours
         getLineColor: (n) => rgba(n.derived ? '#ffffff' : MAP_BG, nodeAlpha(n.nid)),
-        updateTriggers: { getRadius: selection, getFillColor: selection, getLineColor: selection },
+        updateTriggers: {
+          getPosition: placed,
+          getSourcePosition: placed,
+          getTargetPosition: placed,
+          getPath: placed,
+          getRadius: selection,
+          getFillColor: selection,
+          getLineColor: selection,
+        },
         parameters: GROUND,
       }),
     // Selected scenario nodes get a highlight ring at their base
     data &&
       selection &&
       new ScatterplotLayer<GraphNode>({
-        id: 'selected-rings',
+        id: layerId('selected-rings'),
         data: selectedEntities,
         radiusUnits: 'pixels',
         getRadius: 11,
@@ -476,14 +602,15 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         stroked: true,
         lineWidthUnits: 'pixels',
         getLineWidth: 2,
-        getPosition: (n) => [n.lon, n.lat],
+        getPosition: ground,
         getLineColor: rgba(HIGHLIGHT_COLOR),
+        updateTriggers: { getPosition: placed, getPath: placed },
         parameters: GROUND,
       }),
     // Built only once there is text: an empty 'auto' character set makes an empty font atlas
     placeLabels.length > 0 &&
       new TextLayer<Place>({
-        id: 'place-labels',
+        id: layerId('place-labels'),
         data: placeLabels,
         characterSet: 'auto',
         getPosition: (p) => p.position,
@@ -497,11 +624,12 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         fontSettings: { sdf: true },
         outlineWidth: 3,
         outlineColor: rgba(MAP_BG),
+        ...drape,
         parameters: GROUND,
       }),
     data &&
       new TextLayer<GraphNode>({
-        id: 'entity-labels',
+        id: layerId('entity-labels'),
         // vehicles and casualties in transit slide to their new position between ticks
         transitions: { getPosition: 900 },
         data: data.entities,
@@ -517,7 +645,13 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         fontSettings: { sdf: true },
         outlineWidth: 3,
         outlineColor: rgba(MAP_BG),
-        updateTriggers: { getColor: selection },
+        updateTriggers: {
+          getPosition: placed,
+          getSourcePosition: placed,
+          getTargetPosition: placed,
+          getPath: placed,
+          getColor: selection,
+        },
         parameters: { depthCompare: 'always' },
       }),
   ]
@@ -525,7 +659,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
   const onClick = (info: PickingInfo) => {
     const n = info.object as GraphNode | undefined
     const token = ++inspectToken.current
-    if (!n || (info.layer?.id !== 'entities' && info.layer?.id !== 'junctions')) {
+    const picked = info.layer?.id.replace('@terrain', '')
+    if (!n || (picked !== 'entities' && picked !== 'junctions')) {
       onSelectNode(null)
       setInspector(null)
       return
@@ -602,8 +737,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         </div>
       )}
       <div className="text-content-fourth pointer-events-none absolute right-3 bottom-2 z-[1000] text-[10px]">
-        Drag to pan, right-drag or Ctrl-drag to rotate and tilt, scroll to zoom {'·'} Map data {'©'}{' '}
-        OpenStreetMap contributors (ODbL)
+        Map data {'©'} OpenStreetMap contributors (ODbL)
+        {terrainOn && ` \u00b7 Elevation: ${terrain.attribution}`}
       </div>
     </div>
   )

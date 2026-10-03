@@ -126,7 +126,7 @@ export const QueryBar = ({ graph, graphName, change, onResult, open, onOpenChang
       <button
         type="button"
         onClick={() => onOpenChange(true)}
-        className="bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
+        className="pointer-events-auto bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
       >
         Query the graph <Kbd>/</Kbd>
       </button>
@@ -134,7 +134,7 @@ export const QueryBar = ({ graph, graphName, change, onResult, open, onOpenChang
   }
 
   return (
-    <div className="bg-grey-900/95 text-content-primary border-grey-700 flex w-[640px] max-w-full flex-col gap-2 rounded-md border p-2 text-xs shadow-lg">
+    <div className="bg-grey-900/95 text-content-primary border-grey-700 pointer-events-auto flex w-[640px] max-w-full flex-col gap-2 rounded-md border p-2 text-xs shadow-lg">
       <div className="flex gap-2">
         <textarea
           ref={input}

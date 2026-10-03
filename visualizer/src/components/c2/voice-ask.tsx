@@ -164,7 +164,7 @@ export const VoiceAsk = ({ graphName, change, now, onAnswer }: Props) => {
       type="button"
       onClick={toggle}
       disabled={phase === 'thinking'}
-      className={`flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg disabled:opacity-60 ${
+      className={`pointer-events-auto flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg disabled:opacity-60 ${
         phase === 'listening'
           ? 'animate-pulse border-[#ef4444] bg-[#7f1d1d] text-white'
           : 'bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700'
@@ -182,7 +182,7 @@ export const VoiceAsk = ({ graphName, change, now, onAnswer }: Props) => {
   if (!open) return micButton
 
   return (
-    <div className="bg-grey-900/95 text-content-primary border-grey-700 flex w-[560px] max-w-full flex-col gap-2 rounded-md border p-2 text-xs shadow-lg">
+    <div className="bg-grey-900/95 text-content-primary border-grey-700 pointer-events-auto flex w-[560px] max-w-full flex-col gap-2 rounded-md border p-2 text-xs shadow-lg">
       <div className="flex items-center gap-2">
         {micButton}
         <form
