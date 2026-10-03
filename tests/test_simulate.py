@@ -59,7 +59,8 @@ ROOT = Path(__file__).resolve().parent.parent
 def db():
     client = TuringDB(host="http://localhost:6666")
     try:
-        graphs = client.list_available_graphs()
+        # An in-memory TuringDB (run.sh) has graphs only in the loaded list, never on disk
+        graphs = client.list_available_graphs() + client.list_loaded_graphs()
     except Exception:
         pytest.skip("TuringDB is not running on localhost:6666")
     if GRAPH not in graphs:
