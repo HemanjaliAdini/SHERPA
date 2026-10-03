@@ -4,10 +4,11 @@ Crops the DEM tile to the sector, downsamples it, and writes it as a Terrain-RGB
 (height = R * 6553.6 + G * 25.6 + B * 0.1 - 10000 metres) plus a JSON sidecar with its bounds,
 into visualizer/public/terrain/, which the app serves without internet.
 
-Download the tile first (see README / the URL below) into data/elevation/.
+The 40 MB source tile is downloaded into data/elevation/ (git-ignored) if it is not there yet.
 Usage: uv run python scripts/build_terrain.py
 """
 import json
+import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -35,9 +36,24 @@ def to_terrain_rgb(height_m: np.ndarray) -> np.ndarray:
     return rgb.astype(np.uint8)
 
 
+def download_tile() -> None:
+    """Fetch the DEM tile; written to a .part file first so an interrupted download is never used."""
+    SRC.parent.mkdir(parents=True, exist_ok=True)
+    part = SRC.with_suffix(".tif.part")
+    print(f"downloading {SOURCE_URL}", flush=True)
+    with urllib.request.urlopen(SOURCE_URL, timeout=120) as resp, open(part, "wb") as f:
+        total = int(resp.headers.get("Content-Length", 0))
+        done = 0
+        while chunk := resp.read(1 << 22):
+            f.write(chunk)
+            done += len(chunk)
+            print(f"  {done / 1e6:.0f} of {total / 1e6:.0f} MB", flush=True)
+    part.rename(SRC)
+
+
 def main() -> None:
     if not SRC.exists():
-        raise SystemExit(f"missing {SRC}; download it from {SOURCE_URL}")
+        download_tile()
     south, west, north, east = FULL_BBOX
     with rasterio.open(SRC) as dem:
         window = from_bounds(west, south, east, north, dem.transform).round_offsets().round_lengths()
