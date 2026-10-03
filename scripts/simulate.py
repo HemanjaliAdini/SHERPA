@@ -1,6 +1,7 @@
 """Scenario simulator: one tick = one scenario minute = one TuringDB commit.
 
-Each tick dispatches free vehicles to triaged casualties (routing.dispatch_pass), moves every vehicle with a mission
+Each tick first applies the events due (events.apply_due: a closed road, ...), then dispatches free vehicles to
+triaged casualties (routing.dispatch_pass), moves every vehicle with a mission
 along its ROUTE_STEPs at min(vehicle speed, road cap) / delay_factor, picks casualties up (they then ride with the
 vehicle), drops them at the destination and moves the scenario Clock one minute on. A drop at a handover or
 collection point puts the casualty back in line for an ambulance.
@@ -165,8 +166,9 @@ def move_missions(client: TuringDB) -> None:
             pickup_at = distance_to_junction(legs, junctions.index(int(c["j"]))) if int(c["j"]) in junctions else 0.0
             if c["status"] == "assigned" and progress >= pickup_at:
                 c["status"] = "in_transit"
+                # A stranded casualty is rescued once on board: it no longer jumps the queue at a later relay
                 client.query(f"MATCH (m:Mission {{id: {lit(m['id'])}}})-[r:PICKS_UP]->(c:Casualty {{id: {lit(c['id'])}}}) "
-                             "SET r.status = 'picked_up', c.status = 'in_transit'")
+                             "SET r.status = 'picked_up', c.status = 'in_transit' REMOVE c.stranded_by, c.stranded_from")
             if c["status"] == "in_transit":
                 client.query(f"MATCH (c:Casualty {{id: {lit(c['id'])}}}) SET c.lat = {lat}, c.lon = {lon}")
         if progress >= distance_to_junction(legs, len(legs)):
@@ -175,9 +177,14 @@ def move_missions(client: TuringDB) -> None:
 
 def tick_writes(client: TuringDB) -> datetime:
     """One scenario minute, written inside the caller's change. Returns the new scenario time."""
+    from events import apply_due, resolve_events  # events imports this module for its route helpers
+
     now = read_clock(client)
+    apply_due(client, now)  # before dispatch, so a closed road or a new casualty counts in the same minute
     dispatch_pass(client, now)
     move_missions(client)
+    client.query("COMMIT")  # pickups and deliveries visible to the checks below
+    resolve_events(client, now)  # events whose effect is over: a casualty delivered, a stranded one picked up
     client.query(f"MATCH (k:Clock) SET k.now = {cypher_time(now + TICK)}")
     return now + TICK
 
@@ -200,10 +207,13 @@ def in_change(client: TuringDB, work) -> None:
 
 
 def reset_writes(client: TuringDB) -> None:
-    """Back to the seed: no missions, everyone at their start, beds and clock as seeded, paused."""
+    """Back to the seed: no missions, everyone at their start, beds and clock as seeded, every event undone and
+    the demo script's events pending again, paused."""
+    from events import reset_events
     from seed_scenario import CASUALTIES, MEDICAL_POINTS, SCENARIO_START, VEHICLES, snap
 
     client.query("MATCH (m:Mission) DETACH DELETE m")
+    reset_events(client)
     client.query("MATCH (c:Casualty)-[h:HELD_AT]->() DELETE h")
     client.query("COMMIT")
     # Re-link only what moved: recreating every NEAR edge clashes with the medic's writes to the same nodes

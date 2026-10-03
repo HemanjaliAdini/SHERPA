@@ -118,8 +118,8 @@ def test_casualty_at_a_relay_point_gets_ambulances_only():
     assert option.vehicle.type == "ambulance"
 
 
-def waiting(cid, triage, minute, junction=4, mobility="litter", at_relay=False):
-    return Waiting(cid, triage, datetime(2023, 9, 12, 4, minute), junction, mobility, at_relay)
+def waiting(cid, triage, minute, junction=4, mobility="litter", at_relay=False, stranded=False, only_type=None):
+    return Waiting(cid, triage, datetime(2023, 9, 12, 4, minute), junction, mobility, at_relay, stranded, only_type)
 
 
 def test_dispatch_priority_order():
@@ -130,6 +130,19 @@ def test_dispatch_priority_order():
     plan = dispatch(mission_network(), [waiting("T1-LATER", "T1", 40), waiting("T1-FIRST", "T1", 10)],
                     one_vehicle, POINTS, {"R1": 4})
     assert [cas.id for cas, _ in plan] == ["T1-FIRST"]
+
+
+def test_a_stranded_casualty_is_dispatched_first():
+    plan = dispatch(mission_network(), [waiting("T1-WAITING", "T1", 0), waiting("LEFT", "T3", 30, stranded=True)],
+                    [ugv()], POINTS, {"R1": 4})
+    assert [cas.id for cas, _ in plan] == ["LEFT"]  # ahead of a T1: its vehicle stopped under it
+
+
+def test_a_stranded_casualty_waits_for_its_vehicle_type():
+    assert best_option(mission_network(), 4, "litter", [ambulance()], POINTS, only_type="ugv") is None
+    plan = dispatch(mission_network(), [waiting("LEFT", "T1", 0, stranded=True, only_type="ugv"),
+                                        waiting("NEXT", "T2", 0)], [ambulance()], POINTS, {"R1": 4})
+    assert [cas.id for cas, _ in plan] == ["NEXT"]  # the free ambulance goes on to the next casualty
 
 
 def test_dispatch_skips_untriaged_and_dead():

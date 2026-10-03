@@ -13,6 +13,8 @@ from turingdb import TuringDB
 
 from build_roads import haversine_m
 from cypher import lit, props
+from demo_script import EVENTS
+from events import create_clause
 
 GRAPH = sys.argv[1] if len(sys.argv) > 1 else "evac2"
 COS2_LAT = 0.456  # cos^2(47.5 deg): equirectangular squared-distance weight for longitude
@@ -111,6 +113,8 @@ def create_statement() -> str:
     parts.append("(:SimControl " + props(id=lit("SIM"), running=lit(False), speed=1.0, reset=lit(False)) + ")")
     tid, ttype, level, active, _, _ = THREAT
     parts.append(f"({var(tid)}:Threat " + props(id=lit(tid), type=lit(ttype), level=level, active=active) + ")")
+    # What happens during the run (PRD 6.11), pending until the simulator reaches each one's minute
+    parts += [create_clause(e) for e in EVENTS]
     return "CREATE " + ",\n       ".join(parts)
 
 

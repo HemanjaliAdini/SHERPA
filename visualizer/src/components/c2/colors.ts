@@ -10,7 +10,10 @@ export const BASEMAP_STYLE = {
 } as const
 
 export const ROAD_BASE_COLOR = '#5b6f86'
-export const ROAD_CLOSED_COLOR = '#3b2230'
+// Roads changed by an event (scripts/events.py): bright, so a closure or a blockage is seen as it happens
+export const ROAD_CLOSED_COLOR = '#f43f5e'
+export const ROAD_DELAYED_COLOR = '#fb923c'
+export const EVENT_COLOR = '#f43f5e'
 
 // Threat level 0..1 on a slate -> amber -> red ramp
 const THREAT_STOPS: [number, [number, number, number]][] = [
@@ -47,6 +50,19 @@ const ROAD_WEIGHT: Record<string, number> = {
 
 export const roadWeight = (highway: string) => ROAD_WEIGHT[highway] ?? 1.2
 
+type RoadLook = { closed: boolean; delay: number; threat: number; highway: string }
+
+/** A road's colour: closed or slowed by an event first, then its threat level */
+export function roadColor(e: RoadLook): string {
+  if (e.closed) return ROAD_CLOSED_COLOR
+  if (e.delay > 1) return ROAD_DELAYED_COLOR
+  return e.threat > 0 ? threatColor(e.threat) : ROAD_BASE_COLOR
+}
+
+/** Roads changed by an event are drawn wider than their class */
+export const roadWidth = (e: RoadLook) =>
+  roadWeight(e.highway) + (e.closed ? 2.5 : e.delay > 1 ? 1.5 : 0)
+
 // Entity colours: casualties by triage category, facilities by role, vehicles by kind
 export const TRIAGE_COLOR: Record<string, string> = {
   T1: '#ef4444',
@@ -68,7 +84,12 @@ export const FACILITY_LABEL: Record<string, string> = {
   role2_basic: 'Role 2 Basic',
   role3: 'Role 3',
 }
-export const VEHICLE_COLOR: Record<string, string> = { ugv: '#f59e0b', ambulance: '#e5e7eb' }
+// 'disabled': stopped by an event (a flat battery), left where it stopped
+export const VEHICLE_COLOR: Record<string, string> = {
+  ugv: '#f59e0b',
+  ambulance: '#e5e7eb',
+  disabled: '#4b5563',
+}
 export const THREAT_MARKER_COLOR = '#fb7185'
 export const FALLBACK_COLOR = '#9ca3af'
 
@@ -81,6 +102,7 @@ export const LABEL_COLOR: Record<string, string> = {
   Vehicle: VEHICLE_COLOR.ugv,
   Threat: THREAT_MARKER_COLOR,
   Mission: '#c084fc',
+  Event: EVENT_COLOR,
 }
 
 export function nodeColor(label: string, kind: string): string {

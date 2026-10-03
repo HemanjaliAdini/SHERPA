@@ -75,6 +75,7 @@ cd visualizer && npx playwright test tests/simulator.spec.ts
 | `scripts/seed_scenario.py` | medical points, vehicles, untriaged casualties with MIST reports, simulator clock |
 | `scripts/routing.py` | route search with computed travel time, automatic dispatch, road closure |
 | `scripts/simulate.py` | the simulator: ticks, movement, pickups and drops, reset |
+| `scripts/events.py`, `demo_script.py` | events during a run (road closed or slowed, new casualty, battery depleted): applied on the tick, re-routing, stranded casualties, reset; the scripted demo |
 | `scripts/seed_toy_graph.py` | 13-junction test graph, no OSM needed |
 | `scripts/voice_query.py`, `voice_text.py`, `voice_server.py` | spoken questions in English and Ukrainian: intents, answers from the graph, all Ukrainian text, Parakeet + MiniLM server |
 | `scripts/extract_basemap.py` | offline basemap for the map |

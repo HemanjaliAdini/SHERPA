@@ -1,6 +1,6 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 
 import './c2.css'
 import {
@@ -9,14 +9,13 @@ import {
   HIGHLIGHT_COLOR,
   MISSION_ROUTE_STYLE,
   OTHER_EDGE_STYLE,
-  ROAD_BASE_COLOR,
-  ROAD_CLOSED_COLOR,
   nodeColor,
-  roadWeight,
-  threatColor,
+  roadColor,
+  roadWidth,
 } from './colors'
 import type { GeoGraph, GraphEdge, GraphNode } from './graph-data'
 import { inspectNode } from './inspector'
+import { type MapAlert, alertHtml, layoutAlerts } from './map-alerts'
 import type { Selection } from './selection'
 import { HOME_BOUNDS, HOME_PADDING, SECTOR_BOUNDS } from './view'
 
@@ -40,6 +39,8 @@ type Props = {
   change: string | undefined
   /** Incremented to ask the map to zoom to the current selection (e.g. after a query) */
   fitRequest: number
+  /** Applied events, drawn as callouts where they happened */
+  alerts: MapAlert[]
 }
 
 /** Commands the page can send to the map (buttons and keyboard shortcuts). */
@@ -68,9 +69,9 @@ async function loadGeoJson(name: string): Promise<GeoJSON.FeatureCollection> {
 function edgeStyle(e: GraphEdge): L.PolylineOptions {
   if (e.type === 'ROAD') {
     return {
-      color: e.closed ? ROAD_CLOSED_COLOR : e.threat > 0 ? threatColor(e.threat) : ROAD_BASE_COLOR,
-      weight: roadWeight(e.highway),
-      dashArray: e.closed ? '2 6' : undefined,
+      color: roadColor(e),
+      weight: roadWidth(e),
+      dashArray: e.closed ? '4 5' : undefined,
       opacity: 0.95,
     }
   }
@@ -121,12 +122,17 @@ function slide(marker: L.CircleMarker, from: L.LatLng, to: L.LatLng) {
 }
 
 export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
-  { graph, selection, onSelectNode, graphName, change, fitRequest },
+  { graph, selection, onSelectNode, graphName, change, fitRequest, alerts },
   ref
 ) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const graphLayer = useRef<L.LayerGroup | null>(null)
+  const alertLayer = useRef<L.LayerGroup | null>(null)
+  // The open inspector popup and its node, refreshed in place on each new graph (every tick while running)
+  const inspected = useRef<{ popup: L.Popup; nid: number } | null>(null)
+  // Alert stacking depends on the zoom (their screen distance), so they are laid out again after each zoom
+  const [zoom, setZoom] = useState(0)
   const edgeLines = useRef<L.Polyline[]>([])
   const nodeMarkers = useRef(new Map<number, { marker: L.CircleMarker; look: NodeLook }>())
   // Read by event handlers, so they always see the latest props without re-binding
@@ -148,6 +154,7 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     m.attributionControl.addAttribution('Map data © OpenStreetMap contributors (ODbL)')
     m.fitBounds(HOME, HOME_FIT)
     m.on('click', () => latest.current.onSelectNode(null))
+    m.on('zoomend', () => setZoom(m.getZoom()))
     map.current = m
 
     let cancelled = false
@@ -259,14 +266,15 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     )
     nodeMarkers.current = new Map()
     for (const n of ordered) {
-      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1")
-      if (n.label === 'Mission' || n.status === 'in_transit') continue
+      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1");
+      // events are drawn as alerts (below)
+      if (n.label === 'Mission' || n.label === 'Event' || n.status === 'in_transit') continue
       const look = nodeLook(n, anchors)
       const from = n.label === 'Junction' ? undefined : previous.get(n.nid)
       const marker = L.circleMarker(from ?? [n.lat, n.lon], { ...look.style, radius: look.radius })
       if (from && (from.lat !== n.lat || from.lng !== n.lon))
         slide(marker, from, L.latLng(n.lat, n.lon))
-      if (n.label !== 'Junction') {
+      if (n.label !== 'Junction' && n.tag) {
         marker.bindTooltip(n.tag, {
           permanent: true,
           direction: 'right',
@@ -284,7 +292,54 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     }
     group.addTo(m)
     graphLayer.current = group
+
+    const open = inspected.current
+    if (open && m.hasLayer(open.popup)) {
+      const n = graph.nodes.get(open.nid)
+      if (!n) m.closePopup(open.popup)
+      else {
+        open.popup.setLatLng([n.lat, n.lon]) // a moving vehicle takes its popup along
+        inspectNode(graph, n, graphName, change, (html) => open.popup.setContent(html), true)
+      }
+    }
   }, [graph])
+
+  // Event alerts, above every marker; redrawn when they change, the selection does or the zoom does
+  // biome-ignore lint/correctness/useExhaustiveDependencies: zoom only triggers a new layout
+  useEffect(() => {
+    const m = map.current
+    if (!m) return
+    alertLayer.current?.remove()
+    const group = L.layerGroup()
+    const points = alerts.map((alert) => {
+      const { x, y } = m.latLngToContainerPoint([alert.lat, alert.lon])
+      return { alert, x, y }
+    })
+    layoutAlerts(points).forEach(({ alert: a, stem }, order) => {
+      const icon = L.divIcon({
+        className: 'c2-alert-anchor',
+        html: alertHtml(a, selection?.nodes.has(a.nid) ?? false, stem),
+        iconSize: [0, 0],
+      })
+      // Drawn in layout order (open alerts last, on top); hovering lifts a compact one to read it
+      const marker = L.marker([a.lat, a.lon], {
+        icon,
+        zIndexOffset: 10000 + order * 10,
+        riseOnHover: true,
+        riseOffset: 100000,
+        keyboard: false,
+      })
+      marker.on('click', (ev) => {
+        L.DomEvent.stopPropagation(ev)
+        latest.current.onSelectNode(a.nid)
+        const n = latest.current.graph?.nodes.get(a.nid)
+        if (n) inspect(m, n)
+      })
+      marker.addTo(group)
+    })
+    group.addTo(m)
+    alertLayer.current = group
+  }, [alerts, selection, zoom])
 
   // Highlight the selection and dim everything else; no selection restores the normal look
   useEffect(() => {
@@ -353,6 +408,7 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
   function inspect(m: L.Map, n: GraphNode) {
     const popup = L.popup({ className: 'c2-inspector', maxWidth: 360 }).setLatLng([n.lat, n.lon])
     const { graph: g, graphName: name, change: ch } = latest.current
+    inspected.current = { popup, nid: n.nid }
     let opened = false
     inspectNode(g, n, name, ch, (html) => {
       popup.setContent(html)

@@ -71,8 +71,10 @@ def db():
 
 @pytest.fixture
 def fresh(db):
-    """The scenario at its start; whatever a test leaves in an open change is thrown away."""
+    """The scenario at its start, without the demo script's events (tests/test_events.py covers those, and a
+    retuned script must not change these results); whatever a test leaves in an open change is thrown away."""
     in_change(db, reset_writes)
+    in_change(db, lambda c: c.query("MATCH (e:Event) DETACH DELETE e"))
     yield db
     db.checkout()
 

@@ -13,6 +13,8 @@ export type Casualty = {
   offRoadMetres: number | null
   /** MIST report the medic triages from */
   mist: { mechanism: string; injuries: string; signs: string; treatment: string }
+  /** left on the road in a vehicle that stopped (events.battery_depleted): dispatched first */
+  stranded: boolean
 }
 
 export type Vehicle = {
@@ -54,7 +56,7 @@ const str = (v: unknown) => (v === null || v === undefined ? '' : String(v))
 const CASUALTIES =
   'MATCH (c:Casualty) OPTIONAL MATCH (c)-[n:NEAR]->(j) RETURN c, c.id, c.triage_category, ' +
   'c.mobility, c.status, c.time_of_injury, n.distance_m, j, c.mist_mechanism, c.mist_injuries, ' +
-  'c.mist_signs, c.mist_treatment'
+  'c.mist_signs, c.mist_treatment, c.stranded_by'
 const VEHICLES =
   'MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN v, v.id, v.type, v.status, ' +
   'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh'
@@ -77,6 +79,7 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       offRoadMetres: r[6] === null || r[6] === undefined ? null : Number(r[6]),
       junction: nodeId(r[7]),
       mist: { mechanism: str(r[8]), injuries: str(r[9]), signs: str(r[10]), treatment: str(r[11]) },
+      stranded: Boolean(r[12]),
     })),
     vehicles: rowsOf(v).map((r) => ({
       nid: Number(r[0]),
@@ -105,17 +108,17 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
   }
 }
 
-// Untriaged reports first (the medic's work), then by category; the dead last
-const TRIAGE_ORDER: Record<string, number> = { '': -1, T1: 0, T2: 1, T3: 2, T4: 3, DEAD: 4 }
+// Untriaged reports first (the medic's work), then the stranded (dispatch takes them first, as in
+// scripts/routing.py), then by category; the dead last
+const TRIAGE_ORDER: Record<string, number> = { '': -2, T1: 0, T2: 1, T3: 2, T4: 3, DEAD: 4 }
+const rank = (c: Casualty) => (c.triage && c.stranded ? -1 : (TRIAGE_ORDER[c.triage] ?? 9))
 
 /** Casualties still needing evacuation: most urgent first, then longest waiting first. */
 export function activeQueue(casualties: Casualty[]): Casualty[] {
   return casualties
     .filter((c) => c.status !== 'delivered')
     .sort(
-      (a, b) =>
-        (TRIAGE_ORDER[a.triage] ?? 9) - (TRIAGE_ORDER[b.triage] ?? 9) ||
-        (a.injuredAt?.getTime() ?? 0) - (b.injuredAt?.getTime() ?? 0)
+      (a, b) => rank(a) - rank(b) || (a.injuredAt?.getTime() ?? 0) - (b.injuredAt?.getTime() ?? 0)
     )
 }
 

@@ -31,14 +31,13 @@ import {
   MAP_BG,
   MISSION_ROUTE_STYLE,
   OTHER_EDGE_STYLE,
-  ROAD_BASE_COLOR,
-  ROAD_CLOSED_COLOR,
   nodeColor,
-  roadWeight,
-  threatColor,
+  roadColor,
+  roadWidth,
 } from './colors'
 import type { GeoGraph, GraphEdge, GraphNode } from './graph-data'
 import { inspectNode } from './inspector'
+import { type MapAlert, alertHtml, layoutAlerts } from './map-alerts'
 import type { Selection } from './selection'
 import {
   type HeightAt,
@@ -60,6 +59,8 @@ type Props = {
   fitRequest: number
   /** Terrain height exaggeration; 0 draws the map flat */
   terrainScale?: number
+  /** Applied events, drawn as callouts where they happened */
+  alerts: MapAlert[]
 }
 
 type ViewState = MapViewState & {
@@ -89,13 +90,12 @@ function rgba(color: string, alpha = 1): [number, number, number, number] {
 }
 
 function edgeColor(e: GraphEdge): string {
-  if (e.type === 'ROAD')
-    return e.closed ? ROAD_CLOSED_COLOR : e.threat > 0 ? threatColor(e.threat) : ROAD_BASE_COLOR
+  if (e.type === 'ROAD') return roadColor(e)
   return (EDGE_STYLE[e.type] ?? OTHER_EDGE_STYLE).color
 }
 
 function edgeWidth(e: GraphEdge): number {
-  return e.type === 'ROAD' ? roadWeight(e.highway) : (EDGE_STYLE[e.type] ?? OTHER_EDGE_STYLE).weight
+  return e.type === 'ROAD' ? roadWidth(e) : (EDGE_STYLE[e.type] ?? OTHER_EDGE_STYLE).weight
 }
 
 type Basemap = Record<
@@ -126,7 +126,7 @@ function fitHome(width: number, height: number) {
 }
 
 export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
-  { graph, selection, onSelectNode, graphName, change, fitRequest, terrainScale = 0 },
+  { graph, selection, onSelectNode, graphName, change, fitRequest, terrainScale = 0, alerts },
   ref
 ) {
   const container = useRef<HTMLDivElement>(null)
@@ -173,8 +173,34 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     setViewState((v) => ({ ...v, longitude, latitude, zoom }))
   }, [])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new graph closes the inspector
-  useEffect(() => setInspector(null), [graph])
+  // The inspected node, kept across refreshes: each new graph (every tick while running) updates the
+  // open inspector in place, and closes it only if the node is gone
+  const inspected = useRef<number | null>(null)
+  const openInspector = (n: GraphNode, quiet = false) => {
+    const token = ++inspectToken.current
+    inspected.current = n.nid
+    inspectNode(
+      graph,
+      n,
+      graphName,
+      change,
+      (html) => {
+        if (token === inspectToken.current) setInspector(html)
+      },
+      quiet
+    )
+  }
+  const closeInspector = () => {
+    inspectToken.current++
+    inspected.current = null
+    setInspector(null)
+  }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refresh on a new graph only
+  useEffect(() => {
+    const n = inspected.current === null ? undefined : graph?.nodes.get(inspected.current)
+    if (n) openInspector(n, true)
+    else if (inspected.current !== null) closeInspector()
+  }, [graph])
 
   // Slow orbit around the centre of the view; paused while a fly-to is running
   useEffect(() => {
@@ -333,8 +359,9 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     const junctions: GraphNode[] = []
     const entities: GraphNode[] = []
     for (const n of graph.nodes.values()) {
-      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1")
-      if (n.label === 'Mission' || n.status === 'in_transit') continue
+      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1");
+      // events are drawn as alerts (HTML over the map)
+      if (n.label === 'Mission' || n.label === 'Event' || n.status === 'in_transit') continue
       ;(n.label === 'Junction' ? junctions : entities).push(n)
     }
     const roads: number[] = []
@@ -656,19 +683,38 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       }),
   ]
 
+  // Alerts follow the camera: project each event's ground point to the screen on every render
+  const el = container.current
+  const screen =
+    el && el.clientWidth > 0
+      ? new WebMercatorViewport({ ...viewState, width: el.clientWidth, height: el.clientHeight })
+      : null
+  const placedAlerts = layoutAlerts(
+    screen
+      ? alerts.flatMap((alert) => {
+          const [x, y] = screen.project(lift(alert.lon, alert.lat))
+          const seen = x >= 0 && y >= 0 && x <= screen.width && y <= screen.height
+          return seen ? [{ alert, x, y }] : []
+        })
+      : []
+  )
+  const clickAlert = (a: MapAlert) => {
+    const n = graph?.nodes.get(a.nid)
+    if (!n) return
+    onSelectNode(a.nid)
+    openInspector(n)
+  }
+
   const onClick = (info: PickingInfo) => {
     const n = info.object as GraphNode | undefined
-    const token = ++inspectToken.current
     const picked = info.layer?.id.replace('@terrain', '')
     if (!n || (picked !== 'entities' && picked !== 'junctions')) {
       onSelectNode(null)
-      setInspector(null)
+      closeInspector()
       return
     }
     onSelectNode(n.nid)
-    inspectNode(graph, n, graphName, change, (html) => {
-      if (token === inspectToken.current) setInspector(html)
-    })
+    openInspector(n)
   }
 
   const button =
@@ -700,6 +746,21 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
             : null
         }
       />
+      <div className="pointer-events-none absolute inset-0 z-[900] overflow-hidden">
+        {placedAlerts.map(({ alert: a, x, y, stem }) => (
+          <div
+            key={a.nid}
+            className="absolute"
+            style={{ left: x, top: y }}
+            onClick={() => clickAlert(a)}
+            onKeyDown={(e) => e.key === 'Enter' && clickAlert(a)}
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: alertHtml escapes all values
+            dangerouslySetInnerHTML={{
+              __html: alertHtml(a, selection?.nodes.has(a.nid) ?? false, stem),
+            }}
+          />
+        ))}
+      </div>
       <div className="absolute top-[88px] right-3 z-[1000] flex gap-1.5 text-xs">
         <button
           type="button"
@@ -725,7 +786,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
           <button
             type="button"
             className="text-content-fourth hover:text-content-primary float-right ml-2"
-            onClick={() => setInspector(null)}
+            onClick={closeInspector}
             aria-label="Close inspector"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
