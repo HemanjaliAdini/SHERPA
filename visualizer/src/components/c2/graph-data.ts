@@ -26,6 +26,8 @@ export type GraphEdge = {
   /** road speeds in km/h (null for non-road edges) */
   speedUgv: number | null
   speedAmbulance: number | null
+  /** ROAD delay_factor (1 when absent) */
+  delay: number
 }
 
 export type GeoGraph = {
@@ -41,10 +43,12 @@ export type GeoGraph = {
 }
 
 const NODES_QUERY =
-  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category'
+  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, n.status'
+// Simulator bookkeeping nodes have no place on the map
+const HIDDEN_LABELS = new Set(['Clock', 'SimControl'])
 const EDGES_QUERY =
   'MATCH (a)-[r]->(b) RETURN id(r), id(a), id(b), type(r), r.highway, r.threat_level, r.status, ' +
-  'r.length_m, r.distance_m, r.speed_ugv_kmh, r.speed_ambulance_kmh, r.order'
+  'r.length_m, r.distance_m, r.speed_ugv_kmh, r.speed_ambulance_kmh, r.order, r.delay_factor'
 // Nodes without coordinates (Threat, Mission) take the mean of their placed neighbours; a few
 // passes let positions flow along short chains such as Mission -> Vehicle -> Junction
 const PLACEMENT_PASSES = 3
@@ -59,10 +63,16 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
 
   const nodes = new Map<number, GraphNode>()
   const pending = new Map<number, Omit<GraphNode, 'lat' | 'lon' | 'derived'>>()
+  // Finished missions and simulator nodes are left out, together with their edges
+  const hidden = new Set<number>()
   for (const chunk of nodeData) {
-    const [nid, labels, id, lat, lon, type, triage] = chunk as unknown[][]
+    const [nid, labels, id, lat, lon, type, triage, status] = chunk as unknown[][]
     for (let i = 0; i < nid.length; i++) {
       const label = (labels[i] as string[])[0] ?? ''
+      if (HIDDEN_LABELS.has(label) || (label === 'Mission' && status[i] === 'done')) {
+        hidden.add(Number(nid[i]))
+        continue
+      }
       const base = {
         nid: Number(nid[i]),
         label,
@@ -88,12 +98,26 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
   const routeSteps = new Map<number, [number, number][]>()
   const nullableNumber = (v: unknown) => (v === null || v === undefined ? null : Number(v))
   for (const chunk of edgeData) {
-    const [eid, src, dst, type, highway, threat, status, length, distance, ugv, ambulance, order] =
-      chunk as unknown[][]
+    const [
+      eid,
+      src,
+      dst,
+      type,
+      highway,
+      threat,
+      status,
+      length,
+      distance,
+      ugv,
+      ambulance,
+      order,
+      delay,
+    ] = chunk as unknown[][]
     for (let i = 0; i < src.length; i++) {
       const id = Number(eid[i])
       const s = Number(src[i])
       const d = Number(dst[i])
+      if (hidden.has(s) || hidden.has(d)) continue
       // A mission's ROUTE_STEP edges become one ordered route line, not one spoke per junction,
       // and do not pull the mission node's derived position along the route
       if (type[i] === 'ROUTE_STEP') {
@@ -128,6 +152,7 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
         metres: nullableNumber(metres),
         speedUgv: nullableNumber(ugv[i]),
         speedAmbulance: nullableNumber(ambulance[i]),
+        delay: nullableNumber(delay[i]) ?? 1,
       })
     }
   }

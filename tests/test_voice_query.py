@@ -194,3 +194,28 @@ def test_asks_which_casualty_when_none_is_named(matcher):
 def test_answers_end_to_end(matcher):
     result = ask(matcher, "Which casualty on my map right now is the most critical?", "unused", world=world())
     assert result["understood"] and result["rows"][0][0] == "CAS-2"
+
+
+def test_untriaged_casualties_are_named_but_never_ranked():
+    w = world()
+    w.casualties.append(Casualty(14, "CAS-4", "", "", "reported", at("03:00"), 4, 47.44, 35.83))
+    answer = handler("most_critical")(w, Slots())
+    assert answer.say.startswith("CAS-2 is the most critical")
+    assert answer.say.endswith("1 not triaged yet: CAS-4.")
+    assert "CAS-4" not in handler("unassigned")(w, Slots()).say.split(".")[0]
+
+
+def test_casualty_at_a_relay_point_waits_for_an_ambulance_not_a_ugv():
+    w = world()
+    cas = w.casualty("CAS-1")
+    cas.held_at = "HP-1"
+    answer = handler("nearest_vehicle")(w, Slots(casualty="CAS-1"))
+    assert answer.say.startswith("No idle vehicle")  # UGV-1 is idle and close, but UGVs do not take relays
+    assert "waiting for an ambulance" in handler("casualty_status")(w, Slots(casualty="CAS-1")).say
+
+
+def test_delivered_and_dead_casualties_leave_the_queue():
+    w = world()
+    w.casualty("CAS-1").status = "delivered"
+    w.casualty("CAS-3").status = "dead"
+    assert [r[0] for r in handler("queue")(w, Slots()).rows] == ["CAS-2"]

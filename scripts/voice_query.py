@@ -20,10 +20,10 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from build_roads import haversine_m
-from routing import REQUIRED_CAPABILITY, TRIAGE_ORDER, Road, route
+from routing import DESTINATION_TYPES, TRIAGE_ORDER, Road, route
 
 TURING_API = os.environ.get("TURING_API", "http://localhost:6666")
-DEFAULT_NOW = datetime(2023, 9, 12, 5, 30, tzinfo=timezone.utc)  # the UI's scenario clock
+DEFAULT_NOW = datetime(2023, 9, 12, 5, 30, tzinfo=timezone.utc)  # scenario start, for graphs without a Clock
 # Cosine similarity of all-MiniLM-L6-v2, chosen on tests/test_voice_query.py: questions in scope score 0.6+,
 # unrelated speech mostly under 0.4
 MIN_SCORE = 0.5
@@ -31,6 +31,8 @@ GOLDEN_HOUR_MIN = 60
 LOW_BATTERY_PCT = 30
 AT_POINT_M = 300  # closer than this to a medical point is "at" it
 DEFAULT_SPEED_KMH = {"ugv": 20.0, "ambulance": 80.0}  # graphs seeded before Vehicle.speed_kmh existed
+DONE = ("delivered", "dead")  # casualty statuses that need nothing more
+LIVE_MISSION = ("planned", "active")
 
 
 # --- Reading ids from the text ----------------------------------------------------------------------------------
@@ -130,7 +132,9 @@ class Casualty:
     vehicle: str | None = None
     destination: str | None = None
     pickup_eta: datetime | None = None
-    trip_min: float | None = None  # whole trip, for missions from routing.py, which store no times
+    trip_min: float | None = None  # whole trip, for missions from older graphs, which store no times
+    held_at: str | None = None  # handover or collection point it was dropped at, waiting for an ambulance
+    injuries: str = ""  # from the MIST report
 
 
 @dataclass
@@ -148,6 +152,7 @@ class Vehicle:
     lat: float
     lon: float
     mission: str | None = None
+    max_threat: float = 1.0
 
 
 @dataclass
@@ -204,20 +209,27 @@ class World:
         return next((f for f in self.facilities if f.id == fid), None)
 
 
-def load_world(graph: str, change: str | None = None, now: datetime = DEFAULT_NOW) -> World:
+def load_world(graph: str, change: str | None = None, now: datetime | None = None) -> World:
+    """The scenario at `now`, or at the simulator's Clock when not given."""
     q = lambda query: cypher(graph, change, query)  # noqa: E731
-    casualties = [Casualty(int(r["nid"]), r["id"], r["triage"] or "?", r["mobility"] or "", r["status"] or "",
-                           when(r["toi"]), node_id(r["j"]), r["lat"], r["lon"]) for r in q(
+    if now is None:
+        clock_rows = q("MATCH (k:Clock) RETURN k.now AS now")
+        now = (when(clock_rows[0]["now"]) if clock_rows else None) or DEFAULT_NOW
+    casualties = [Casualty(int(r["nid"]), r["id"], r["triage"] or "", r["mobility"] or "", r["status"] or "",
+                           when(r["toi"]), node_id(r["j"]), r["lat"], r["lon"], injuries=r["injuries"] or "")
+                  for r in q(
         "MATCH (c:Casualty) OPTIONAL MATCH (c)-[:NEAR]->(j) RETURN id(c) AS nid, c.id AS id, "
         "c.triage_category AS triage, c.mobility AS mobility, c.status AS status, c.time_of_injury AS toi, "
-        "c.lat AS lat, c.lon AS lon, id(j) AS j")]
+        "c.lat AS lat, c.lon AS lon, c.mist_injuries AS injuries, id(j) AS j")]
     vehicles = [Vehicle(int(r["nid"]), r["id"], r["type"], r["status"] or "", r["battery"] or 100.0,
                         r["range"] or 0.0, r["litter"] or 0, r["amb"] or 0,
-                        r["speed"] or DEFAULT_SPEED_KMH.get(r["type"], 20.0), node_id(r["j"]), r["lat"], r["lon"])
+                        r["speed"] or DEFAULT_SPEED_KMH.get(r["type"], 20.0), node_id(r["j"]), r["lat"], r["lon"],
+                        max_threat=1.0 if r["max_threat"] is None else r["max_threat"])
                 for r in q(
         "MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN id(v) AS nid, v.id AS id, v.type AS type, "
         "v.status AS status, v.battery_pct AS battery, v.range_km AS range, v.litter_capacity AS litter, "
-        "v.ambulatory_capacity AS amb, v.speed_kmh AS speed, v.lat AS lat, v.lon AS lon, id(j) AS j")]
+        "v.ambulatory_capacity AS amb, v.speed_kmh AS speed, v.max_threat AS max_threat, v.lat AS lat, "
+        "v.lon AS lon, id(j) AS j")]
     facilities = [Facility(int(r["nid"]), r["id"], r["name"] or r["id"], r["type"] or "", r["state"] or "",
                            int(r["beds"] or 0), int(r["medics"] or 0), list(r["caps"] or []), node_id(r["j"]),
                            r["lat"], r["lon"]) for r in q(
@@ -239,12 +251,14 @@ def load_world(graph: str, change: str | None = None, now: datetime = DEFAULT_NO
                "p.order AS k ORDER BY k"):
         m, c = missions[r["m"]], by_id.get(r["c"])
         m.casualties.append(r["c"])
-        if c and m.status not in ("done", "cancelled", "broken"):
+        if c and m.status in LIVE_MISSION:
             c.mission, c.vehicle, c.destination = m.id, m.vehicle, m.destination
             c.pickup_eta, c.trip_min = when(r["eta"]), m.trip_min
     for v in vehicles:
-        v.mission = next((m.id for m in missions.values() if m.vehicle == v.id
-                          and m.status not in ("done", "cancelled", "broken")), None)
+        v.mission = next((m.id for m in missions.values() if m.vehicle == v.id and m.status in LIVE_MISSION), None)
+    for r in q("MATCH (c:Casualty)-[:HELD_AT]->(p:MedicalPoint) RETURN c.id AS c, p.id AS p"):
+        if r["c"] in by_id:
+            by_id[r["c"]].held_at = r["p"]
 
     threats = q("MATCH (t:Threat) RETURN id(t) AS nid, t.id AS id, t.type AS type, t.level AS level, "
                 "t.active AS active")
@@ -255,8 +269,9 @@ def load_world(graph: str, change: str | None = None, now: datetime = DEFAULT_NO
         out: dict[int, list[Road]] = {}
         for r in q("MATCH (a:Junction)-[r:ROAD]->(b:Junction) WHERE r.status <> 'closed' RETURN id(a) AS a, "
                    "id(b) AS b, r.length_m AS len, r.speed_ugv_kmh AS ugv, r.speed_ambulance_kmh AS amb, "
-                   "r.delay_factor AS delay"):
-            out.setdefault(int(r["a"]), []).append(Road(int(r["b"]), r["len"], r["ugv"], r["amb"], r["delay"] or 1.0))
+                   "r.delay_factor AS delay, r.threat_level AS threat"):
+            out.setdefault(int(r["a"]), []).append(Road(int(r["b"]), r["len"], r["ugv"], r["amb"], r["delay"] or 1.0,
+                                                        r["threat"] or 0.0))
         return out
 
     return World(now, casualties, vehicles, facilities, list(missions.values()), threats, closed, roads)
@@ -319,17 +334,26 @@ def km(metres: float) -> str:
 
 
 def active(casualties: list[Casualty]) -> list[Casualty]:
-    """Casualties still needing evacuation, most urgent first, then longest waiting (as the C2 queue)."""
-    return sorted((c for c in casualties if c.status != "delivered"),
+    """Casualties still needing evacuation, most urgent first, then longest waiting; untriaged last."""
+    return sorted((c for c in casualties if c.status not in DONE),
                   key=lambda c: (TRIAGE_ORDER.get(c.triage, 9), c.injured_at or DEFAULT_NOW))
 
 
+def triaged(c: Casualty) -> bool:
+    return c.triage in TRIAGE_ORDER
+
+
 def plan_of(c: Casualty, now: datetime) -> str:
+    if c.mission and c.status == "in_transit":
+        return f"on board {c.vehicle or '?'} ({c.mission}) to {c.destination or '?'}"
     if c.mission:
         eta = f", pickup {clock(c.pickup_eta)}" if c.pickup_eta else (
             f", trip {duration(c.trip_min)}" if c.trip_min else "")
         return f"{c.mission}: {c.vehicle or '?'} to {c.destination or '?'}{eta}"
-    return {"no_resource": "NO VEHICLE AVAILABLE", "awaiting_pickup": "awaiting a vehicle"}.get(c.status, c.status)
+    if c.held_at:
+        return f"at {c.held_at}, waiting for an ambulance"
+    return {"no_resource": "NO VEHICLE AVAILABLE", "awaiting_pickup": "awaiting a vehicle",
+            "reported": "NOT TRIAGED YET"}.get(c.status, c.status)
 
 
 def where(world: World, lat: float, lon: float) -> str:
@@ -345,7 +369,7 @@ CASUALTY_COLUMNS = ["Casualty", "Triage", "Mobility", "Waiting", "Plan"]
 
 
 def casualty_row(c: Casualty, now: datetime) -> list:
-    return [c.id, c.triage, c.mobility, duration(minutes_since(c.injured_at, now)), plan_of(c, now)]
+    return [c.id, c.triage or "untriaged", c.mobility, duration(minutes_since(c.injured_at, now)), plan_of(c, now)]
 
 
 def casualty_table(world: World, casualties: list[Casualty], say: str) -> Answer:
@@ -372,13 +396,20 @@ def names(items: list[str]) -> str:
     "who is the worst off",
 ])
 def most_critical(world: World, _: Slots) -> Answer:
-    queue = active(world.casualties)
-    if not queue:
+    q = active(world.casualties)
+    ranked = [c for c in q if triaged(c)]
+    untriaged = [c for c in q if not triaged(c)]
+    if not q:
         return Answer("There are no active casualties on the map.")
-    c = queue[0]
-    return casualty_table(world, queue[:3], (
+    if not ranked:
+        return casualty_table(world, untriaged, (
+            f"No casualty has been triaged yet. {len(untriaged)} reports wait for triage: "
+            f"{names([c.id for c in untriaged])}."))
+    c = ranked[0]
+    note = f" {len(untriaged)} not triaged yet: {names([u.id for u in untriaged])}." if untriaged else ""
+    return casualty_table(world, ranked[:3] + untriaged, (
         f"{c.id} is the most critical: {c.triage}, {c.mobility or 'mobility unknown'}, waiting "
-        f"{duration(minutes_since(c.injured_at, world.now))}, {plan_of(c, world.now)}."))
+        f"{duration(minutes_since(c.injured_at, world.now))}, {plan_of(c, world.now)}.{note}"))
 
 
 @intent("queue", "All casualties by priority", [
@@ -415,7 +446,7 @@ def triage_count(world: World, slots: Slots) -> Answer:
     counts: dict[str, list[Casualty]] = {}
     for c in q:
         counts.setdefault(c.triage, []).append(c)
-    rows = [[t, len(cs), ", ".join(c.id for c in cs)] for t, cs in sorted(counts.items(),
+    rows = [[t or "untriaged", len(cs), ", ".join(c.id for c in cs)] for t, cs in sorted(counts.items(),
                                                                           key=lambda kv: TRIAGE_ORDER.get(kv[0], 9))]
     if slots.triage:
         n = len(counts.get(slots.triage, []))
@@ -458,7 +489,7 @@ def longest_waiting(world: World, _: Slots) -> Answer:
     if not q:
         return Answer("There are no active casualties on the map.")
     c = q[0]
-    return casualty_table(world, q, (f"{c.id} ({c.triage}) has waited longest: "
+    return casualty_table(world, q, (f"{c.id} ({c.triage or 'not triaged'}) has waited longest: "
                                      f"{duration(minutes_since(c.injured_at, world.now))} since injury."))
 
 
@@ -496,11 +527,18 @@ def casualty_status(world: World, slots: Slots) -> Answer:
     c = world.casualty(slots.casualty)
     if c is None:
         return Answer(f"I can't find {slots.casualty} on the map.")
-    rows = [["Triage", c.triage], ["Mobility", c.mobility], ["Injured", clock(c.injured_at)],
-            ["Waiting", duration(minutes_since(c.injured_at, world.now))], ["Status", c.status],
-            ["Plan", plan_of(c, world.now)], ["Location", where(world, c.lat, c.lon)]]
-    return Answer(f"{c.id}: {c.triage}, {c.mobility}, waiting {duration(minutes_since(c.injured_at, world.now))}, "
-                  f"{plan_of(c, world.now)}.", [c.id, ""], rows, [c.nid])
+    rows = [["Triage", c.triage or "not triaged yet"], ["Mobility", c.mobility], ["Injuries", c.injuries],
+            ["Injured", clock(c.injured_at)], ["Waiting", duration(minutes_since(c.injured_at, world.now))],
+            ["Status", c.status], ["Plan", plan_of(c, world.now)], ["Location", where(world, c.lat, c.lon)]]
+    rows = [r for r in rows if r[1]]
+    if c.status in DONE:
+        say = f"{c.id} is {c.status}."
+    elif not triaged(c):
+        say = f"{c.id} is not triaged yet" + (f": {c.injuries}." if c.injuries else ".")
+    else:
+        say = (f"{c.id}: {c.triage}, {c.mobility}, waiting {duration(minutes_since(c.injured_at, world.now))}, "
+               f"{plan_of(c, world.now)}.")
+    return Answer(say, [c.id, ""], rows, [c.nid])
 
 
 @intent("casualty_eta", "When a casualty is collected", [
@@ -516,10 +554,22 @@ def casualty_eta(world: World, slots: Slots) -> Answer:
     c = world.casualty(slots.casualty)
     if c is None:
         return Answer(f"I can't find {slots.casualty} on the map.")
+    if c.status in DONE:
+        return Answer(f"{c.id} is {c.status}.", highlight=[c.nid])
+    if not triaged(c):
+        return Answer(f"{c.id} is not triaged yet; it is dispatched once a medic triages it.", highlight=[c.nid])
     if not c.mission:
         return Answer(f"Nobody is tasked to {c.id} yet ({plan_of(c, world.now)}). Ask for the nearest vehicle to "
-                      f"{c.id}, or plan a pickup from the queue.", highlight=[c.nid])
+                      f"{c.id}.", highlight=[c.nid])
     v, f = world.vehicle(c.vehicle or ""), world.facility(c.destination or "")
+    m = next((m for m in world.missions if m.id == c.mission), None)
+    if c.status == "in_transit":
+        arrival = f", arriving {clock(m.eta)}" if m and m.eta else ""
+        timing = f"has {c.id} on board"
+        return Answer(f"{c.vehicle} on {c.mission} {timing}, to {c.destination}{arrival}.",
+                      ["Mission", "Vehicle", "Status", "Destination", "Arrival"],
+                      [[c.mission, c.vehicle, "on board", c.destination, clock(m.eta) if m and m.eta else ""]],
+                      [c.nid] + [x.nid for x in (v, f) if x])
     if c.pickup_eta:
         timing = f"picks {c.id} up at {clock(c.pickup_eta)} (in {duration(minutes_since(world.now, c.pickup_eta))})"
     else:
@@ -543,12 +593,15 @@ def casualty_eta(world: World, slots: Slots) -> Answer:
     "which casualties are still uncovered",
 ])
 def unassigned(world: World, _: Slots) -> Answer:
-    cs = [c for c in active(world.casualties) if not c.mission]
+    q = active(world.casualties)
+    cs = [c for c in q if triaged(c) and not c.mission]
+    untriaged = [c for c in q if not triaged(c)]
+    note = f" {len(untriaged)} more not triaged yet: {names([c.id for c in untriaged])}." if untriaged else ""
     if not cs:
-        return Answer("Every active casualty has a vehicle tasked.")
+        return casualty_table(world, untriaged, "Every triaged casualty has a vehicle tasked." + note)
     stuck = [c.id for c in cs if c.status == "no_resource"]
-    return casualty_table(world, cs, f"{len(cs)} without a vehicle: {names([c.id for c in cs])}"
-                          + (f". No resource for {names(stuck)}." if stuck else "."))
+    return casualty_table(world, cs + untriaged, f"{len(cs)} triaged without a vehicle: {names([c.id for c in cs])}"
+                          + (f". No resource for {names(stuck)}." if stuck else ".") + note)
 
 
 @intent("stretcher", "Stretcher cases", [
@@ -645,8 +698,11 @@ def battery(world: World, _: Slots) -> Answer:
     return Answer(say, VEHICLE_COLUMNS, [vehicle_row(v) for v in vs], [v.nid for v in vs if v.id in low])
 
 
-def can_carry(v: Vehicle, mobility: str) -> bool:
-    return v.litter > 0 or (mobility == "ambulatory" and v.ambulatory > 0)
+def can_carry(v: Vehicle, c: Casualty) -> bool:
+    """As routing.py: a casualty already at a relay point is for ambulances only."""
+    if c.held_at and v.type == "ugv":
+        return False
+    return v.litter > 0 or (c.mobility == "ambulatory" and v.ambulatory > 0)
 
 
 @intent("nearest_vehicle", "Fastest vehicle to a casualty", [
@@ -666,20 +722,21 @@ def nearest_vehicle(world: World, slots: Slots) -> Answer:
         return Answer(f"{c.id} is not linked to the road network.", highlight=[c.nid])
     options = []
     for v in world.vehicles:
-        r = route(world.roads(), v.junction, c.junction, v.type, v.speed_kmh) if v.junction is not None else None
+        r = (route(world.roads(), v.junction, c.junction, v.type, v.speed_kmh, v.max_threat)
+             if v.junction is not None else None)
         options.append((v, r))
     options.sort(key=lambda o: (o[1] is None, o[1][1] if o[1] else math.inf))
     rows = [[v.id, v.status, f"{r[1]:.0f} min" if r else "no route", f"{r[2]:.1f} km" if r else "",
-             "yes" if can_carry(v, c.mobility) else "no", "yes" if r and r[2] <= range_left(v) else "no"]
+             "yes" if can_carry(v, c) else "no", "yes" if r and r[2] <= range_left(v) else "no"]
             for v, r in options]
-    fit = [(v, r) for v, r in options if r and v.status == "idle" and can_carry(v, c.mobility)
+    fit = [(v, r) for v, r in options if r and v.status == "idle" and can_carry(v, c)
            and r[2] <= range_left(v)]
     if fit:
         v, r = fit[0]
         say = f"{v.id} is the fastest idle vehicle for {c.id}: {r[1]:.0f} min by road ({r[2]:.1f} km)."
         return Answer(say, ["Vehicle", "Status", "Time", "Distance", "Can carry", "In range"], rows,
                       [c.nid, v.nid], [r[0]])
-    busy = next(((v, r) for v, r in options if r and can_carry(v, c.mobility) and r[2] <= range_left(v)), None)
+    busy = next(((v, r) for v, r in options if r and can_carry(v, c) and r[2] <= range_left(v)), None)
     later = f" Fastest tasked: {busy[0].id} ({busy[0].mission}), {busy[1][1]:.0f} min." if busy else ""
     return Answer(f"No idle vehicle can reach and carry {c.id} ({c.mobility}).{later}",
                   ["Vehicle", "Status", "Time", "Distance", "Can carry", "In range"], rows, [c.nid])
@@ -700,12 +757,14 @@ def nearest_facility(world: World, slots: Slots) -> Answer:
         return Answer(f"I can't find {slots.casualty} on the map.")
     if c.junction is None:
         return Answer(f"{c.id} is not linked to the road network.", highlight=[c.nid])
-    needed = REQUIRED_CAPABILITY.get(c.triage, "first_aid")
+    # Where the dispatcher sends ambulances (routing.DESTINATION_TYPES), on roads within their threat limit
+    ambulances = [v for v in world.vehicles if v.type == "ambulance"]
+    max_threat = max((v.max_threat for v in ambulances), default=1.0)
     options = []
     for f in world.facilities:
-        if needed not in f.capabilities or f.junction is None:
+        if f.type not in DESTINATION_TYPES["ambulance"] or f.junction is None:
             continue
-        r = route(world.roads(), c.junction, f.junction, "ambulance", DEFAULT_SPEED_KMH["ambulance"])
+        r = route(world.roads(), c.junction, f.junction, "ambulance", DEFAULT_SPEED_KMH["ambulance"], max_threat)
         options.append((f, r))
     options.sort(key=lambda o: (o[1] is None, o[1][1] if o[1] else math.inf))
     rows = [[f.id, f.name, f.state, f.free_beds, f"{r[1]:.0f} min" if r else "no route",
@@ -713,11 +772,11 @@ def nearest_facility(world: World, slots: Slots) -> Answer:
     columns = ["Point", "Name", "State", "Free beds", "Ambulance time", "Distance"]
     fit = [(f, r) for f, r in options if r and f.state == "operational" and f.free_beds > 0]
     if not fit:
-        return Answer(f"No operational point with {needed} and a free bed can be reached from {c.id}.", columns,
+        return Answer(f"No operational Role 1 or higher with a free bed can be reached from {c.id}.", columns,
                       rows, [c.nid])
     f, r = fit[0]
-    return Answer(f"{c.id} ({c.triage}) needs {needed}: {f.name} ({f.id}), {r[1]:.0f} min by ambulance, "
-                  f"{f.free_beds} beds free.", columns, rows, [c.nid, f.nid], [r[0]])
+    return Answer(f"Nearest Role 1 or higher with a free bed for {c.id}: {f.name} ({f.id}), {r[1]:.0f} min by "
+                  f"ambulance, {f.free_beds} beds free.", columns, rows, [c.nid, f.nid], [r[0]])
 
 
 FACILITY_COLUMNS = ["Point", "Name", "Type", "State", "Free beds", "Medics"]
@@ -849,20 +908,22 @@ def closed_roads(world: World, _: Slots) -> Answer:
 ])
 def sitrep(world: World, _: Slots) -> Answer:
     q = active(world.casualties)
-    no_vehicle = [c for c in q if not c.mission]
+    untriaged = [c for c in q if not triaged(c)]
+    no_vehicle = [c for c in q if triaged(c) and not c.mission]
     late = [c for c in q if (minutes_since(c.injured_at, world.now) or 0) >= GOLDEN_HOUR_MIN]
     idle = [v for v in world.vehicles if v.status == "idle"]
     rows = [["Active casualties", ", ".join(f"{sum(c.triage == t for c in q)} {t}" for t in ("T1", "T2", "T3"))],
-            ["Without a vehicle", names([c.id for c in no_vehicle]) if no_vehicle else "none"],
+            ["Not triaged", names([c.id for c in untriaged]) if untriaged else "none"],
+            ["Triaged, no vehicle", names([c.id for c in no_vehicle]) if no_vehicle else "none"],
             ["Past golden hour", names([c.id for c in late]) if late else "none"],
             ["Vehicles idle", f"{len(idle)} of {len(world.vehicles)}"],
-            ["Missions", str(len(world.missions))],
+            ["Missions under way", str(sum(m.status in LIVE_MISSION for m in world.missions))],
             ["Free beds", str(sum(f.free_beds for f in world.facilities))],
             ["Active threats", str(sum(1 for t in world.threats if t["active"]))],
             ["Closed roads", str(len({r["way"] for r in world.closed_roads}))]]
-    say = (f"{len(q)} casualties, {len(no_vehicle)} without a vehicle, {len(late)} past the golden hour. "
-           f"{len(idle)} vehicles idle.")
-    return Answer(say, ["", "Now"], rows, [c.nid for c in no_vehicle])
+    say = (f"{len(q)} casualties, {len(untriaged)} not triaged, {len(no_vehicle)} triaged without a vehicle, "
+           f"{len(late)} past the golden hour. {len(idle)} vehicles idle.")
+    return Answer(say, [clock(world.now), "Now"], rows, [c.nid for c in untriaged + no_vehicle])
 
 
 @intent("help", "What I can answer", [
@@ -898,7 +959,7 @@ class Matcher:
         return sorted(best.values(), key=lambda b: -b[1])
 
 
-def ask(matcher: Matcher, question: str, graph: str, change: str | None = None, now: datetime = DEFAULT_NOW,
+def ask(matcher: Matcher, question: str, graph: str, change: str | None = None, now: datetime | None = None,
         world: World | None = None) -> dict:
     """The answer to one question, as the JSON the C2 page shows."""
     question = question.strip()

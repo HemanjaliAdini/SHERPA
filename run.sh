@@ -15,7 +15,7 @@ UI_PORT="${TURING_UI_PORT:-8080}"
 started_db=0
 cleanup() {
   trap - EXIT INT TERM
-  pkill -P $$ 2>/dev/null || true  # the visualizer dev server
+  pkill -P $$ 2>/dev/null || true  # the visualizer dev server and the simulator
   if [ "$started_db" = 1 ]; then
     echo
     echo "Stopping TuringDB..."
@@ -52,6 +52,9 @@ if ! db_up; then
   started_db=1
 fi
 
+# Simulator: follows the SimControl node (play/pause on the C2 screen), writes one commit per scenario minute
+uv run python scripts/simulate.py "$GRAPH" &
+
 if [ "${VOICE:-0}" = 1 ]; then
   GRAPH="$GRAPH" uv run --extra voice python scripts/voice_server.py &
 fi
@@ -60,7 +63,7 @@ cd visualizer
 [ -d node_modules ] || npm i --no-audit --no-fund
 
 echo
-echo "C2 visualizer:        http://localhost:$FRONTEND_PORT/"
+echo "C2 visualizer:        http://localhost:$FRONTEND_PORT/?graph=$GRAPH"
 echo "TuringDB visualizer:  http://localhost:$UI_PORT/"
 echo "TuringDB API:         http://localhost:$API_PORT/   (graph: $GRAPH)"
 echo

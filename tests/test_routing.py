@@ -1,7 +1,9 @@
 """Routing and mission choice on tiny hand-built road networks (no TuringDB needed)."""
 from pytest import approx
 
-from routing import Point, Road, Vehicle, best_option, route
+from datetime import datetime
+
+from routing import Point, Road, Vehicle, Waiting, best_option, dispatch, route
 
 # Two ways from 1 to 4:
 #   short dirt   1 -> 2 -> 4   (2.0 km, UGV cap 18 km/h, ambulance cap 30)
@@ -47,37 +49,100 @@ def test_same_junction_is_a_zero_minute_route():
     assert route(network(), 1, 1, "ugv", 25) == ([1], 0.0, 0.0)
 
 
-# Casualty at junction 4; vehicles start at 1; points at 5 (Role 1) and 6 (collection point only)
-def mission_network() -> dict[int, list[Road]]:
+# Casualty at junction 4; vehicles start at 1; Role 1 at 5 (3 km on), handover point at 6 (0.5 km on)
+def mission_network(threat_on_asphalt: float = 0.0) -> dict[int, list[Road]]:
     roads = network()
+    roads[1][1] = Road(3, 1200, 25, 60, 1.0, threat_on_asphalt)
     roads[4] = [Road(5, 3000, 25, 60, 1.0), Road(6, 500, 25, 60, 1.0)]
     return roads
 
 
-ROLE1 = Point("R1", 5, ("first_aid", "stabilisation"))
-CCP = Point("CCP", 6, ("first_aid",))
+ROLE1 = Point("R1", 5, "role1")
+HP = Point("HP", 6, "handover")
+POINTS = [ROLE1, HP]
 
 
-def test_picks_the_fastest_vehicle_that_can_carry_and_a_point_that_can_treat():
-    slow = Vehicle("UGV-SLOW", "ugv", 1, 10, 25, 1, 0)
-    fast = Vehicle("UGV-FAST", "ugv", 1, 25, 25, 1, 0)
-    option = best_option(mission_network(), 4, "litter", "stabilisation", [slow, fast], [ROLE1, CCP])
+def ugv(vid="UGV", speed=25, range_km=25, battery=100.0, max_threat=0.8):
+    return Vehicle(vid, "ugv", 1, speed, range_km, 1, 0, battery, max_threat)
+
+
+def ambulance(vid="AMB", litter=4, seats=2, max_threat=0.4):
+    return Vehicle(vid, "ambulance", 1, 80, 300, litter, seats, 100.0, max_threat)
+
+
+def test_picks_the_fastest_vehicle_and_ugvs_go_to_the_handover_point():
+    slow, fast = ugv("UGV-SLOW", speed=10), ugv("UGV-FAST")
+    option = best_option(mission_network(), 4, "litter", [slow, fast], POINTS)
     assert option.vehicle == fast
+    assert option.point == HP
+    assert option.steps == [1, 3, 4, 6]  # the casualty's junction appears once
+    assert option.minutes == approx((2.4 + 0.5) / 25 * 60)
+    assert option.pickup_minutes == approx(2.4 / 25 * 60)
+
+
+def test_ambulances_go_to_role1_and_never_to_a_handover_point():
+    option = best_option(mission_network(), 4, "litter", [ambulance()], POINTS)
     assert option.point == ROLE1
-    assert option.steps == [1, 3, 4, 5]  # the casualty's junction appears once
-    assert option.minutes == approx((2.4 + 3.0) / 25 * 60)
+    assert best_option(mission_network(), 4, "litter", [ambulance()], [HP]) is None
+
+
+def test_ugvs_never_go_to_role1():
+    assert best_option(mission_network(), 4, "litter", [ugv()], [ROLE1]) is None
 
 
 def test_litter_casualty_cannot_go_in_a_vehicle_without_litter_space():
-    seats_only = Vehicle("CAR", "ambulance", 1, 80, 300, 0, 4)
-    assert best_option(mission_network(), 4, "litter", "first_aid", [seats_only], [ROLE1]) is None
+    assert best_option(mission_network(), 4, "litter", [ambulance(litter=0)], POINTS) is None
 
 
 def test_ambulatory_casualty_can_use_a_litter():
-    litter_only = Vehicle("UGV", "ugv", 1, 25, 25, 1, 0)
-    assert best_option(mission_network(), 4, "ambulatory", "first_aid", [litter_only], [CCP]) is not None
+    assert best_option(mission_network(), 4, "ambulatory", [ugv()], POINTS) is not None
 
 
-def test_vehicle_out_of_range_is_skipped():
-    short_range = Vehicle("UGV", "ugv", 1, 25, 5, 1, 0)  # trip is 5.4 km
-    assert best_option(mission_network(), 4, "litter", "stabilisation", [short_range], [ROLE1]) is None
+def test_range_is_scaled_by_battery():
+    # the UGV trip to the handover point is 2.9 km
+    assert best_option(mission_network(), 4, "litter", [ugv(range_km=2)], POINTS) is None
+    assert best_option(mission_network(), 4, "litter", [ugv(range_km=5, battery=50)], POINTS) is None
+    assert best_option(mission_network(), 4, "litter", [ugv(range_km=5, battery=60)], POINTS) is not None
+
+
+def test_roads_above_the_vehicles_max_threat_are_avoided():
+    option = best_option(mission_network(threat_on_asphalt=0.7), 4, "litter", [ambulance(max_threat=0.4)], POINTS)
+    assert option.steps[:3] == [1, 2, 4]  # round the threatened asphalt road
+    option = best_option(mission_network(threat_on_asphalt=0.7), 4, "litter", [ugv(max_threat=0.8)], POINTS)
+    assert option.steps[:3] == [1, 3, 4]
+
+
+def test_casualty_at_a_relay_point_gets_ambulances_only():
+    assert best_option(mission_network(), 4, "litter", [ugv()], POINTS, at_relay=True) is None
+    option = best_option(mission_network(), 4, "litter", [ugv(), ambulance()], POINTS, at_relay=True)
+    assert option.vehicle.type == "ambulance"
+
+
+def waiting(cid, triage, minute, junction=4, mobility="litter", at_relay=False):
+    return Waiting(cid, triage, datetime(2023, 9, 12, 4, minute), junction, mobility, at_relay)
+
+
+def test_dispatch_priority_order():
+    one_vehicle = [ugv()]
+    plan = dispatch(mission_network(), [waiting("T3-EARLY", "T3", 0), waiting("T1-LATE", "T1", 30)],
+                    one_vehicle, POINTS, {"R1": 4})
+    assert [cas.id for cas, _ in plan] == ["T1-LATE"]
+    plan = dispatch(mission_network(), [waiting("T1-LATER", "T1", 40), waiting("T1-FIRST", "T1", 10)],
+                    one_vehicle, POINTS, {"R1": 4})
+    assert [cas.id for cas, _ in plan] == ["T1-FIRST"]
+
+
+def test_dispatch_skips_untriaged_and_dead():
+    plan = dispatch(mission_network(), [waiting("NEW", None, 0), waiting("GONE", "DEAD", 0)],
+                    [ugv(), ambulance()], POINTS, {"R1": 4})
+    assert plan == []
+
+
+def test_dispatch_uses_each_vehicle_and_bed_once():
+    two_ambulances = [ambulance("AMB-1"), ambulance("AMB-2")]
+    plan = dispatch(mission_network(), [waiting("A", "T1", 0), waiting("B", "T1", 5)], two_ambulances,
+                    POINTS, {"R1": 1})  # Role 1 has one bed; ambulances cannot use the handover point
+    assert [cas.id for cas, _ in plan] == ["A"]
+    plan = dispatch(mission_network(), [waiting("A", "T1", 0), waiting("B", "T1", 5)], [ugv("U1"), ugv("U2")],
+                    POINTS, {"R1": 0})  # handover points have no beds to run out of
+    assert sorted(o.vehicle.id for _, o in plan) == ["U1", "U2"]

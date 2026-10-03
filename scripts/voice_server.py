@@ -21,7 +21,7 @@ import wave
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from voice_query import DEFAULT_NOW, INTENTS, Matcher, ask
+from voice_query import INTENTS, Matcher, ask
 
 ASR_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
@@ -52,6 +52,7 @@ class Models:
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
         self.matcher = Matcher(lambda texts: model.encode(texts, normalize_embeddings=True))
+        self.matcher.rank("warm up")  # the first encode is ~1 s slower
         log.info("intent matcher ready: %d intents", len(INTENTS))
 
     def load_asr(self) -> None:
@@ -114,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = params.get("text", "")
             if MODELS.matcher is None:
                 return self.reply(503, {"error": "the intent model is still loading"})
-            now = datetime.fromisoformat(params["now"]) if params.get("now") else DEFAULT_NOW
+            now = datetime.fromisoformat(params["now"]) if params.get("now") else None  # None: the graph's Clock
             result = ask(MODELS.matcher, text, params.get("graph") or DEFAULT_GRAPH, params.get("change"), now)
             result["ms"] = ms | result.get("ms", {})
             log.info("%r -> %s (%.2f)%s", text, result.get("intent"), result.get("score", 0),
