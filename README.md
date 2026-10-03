@@ -1,8 +1,8 @@
 # Quick start
 ## Download UV
-  curl -LsSf https://astral.sh/uv/install.sh | sh
+  <code>curl -LsSf https://astral.sh/uv/install.sh | sh</code>
 
 ## Run
-  uv sync
+  <code>uv sync
   ./run.sh
-  \# open http://127.0.0.1:8080
+  \# open http://127.0.0.1:8080</code>
