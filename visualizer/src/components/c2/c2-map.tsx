@@ -8,6 +8,7 @@ import {
   BASEMAP_STYLE,
   EDGE_STYLE,
   HIGHLIGHT_COLOR,
+  MISSION_ROUTE_STYLE,
   OTHER_EDGE_STYLE,
   ROAD_BASE_COLOR,
   ROAD_CLOSED_COLOR,
@@ -202,6 +203,17 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
       )
       return line.addTo(group)
     })
+
+    // Mission routes under the nodes, so they read as the planned path
+    for (const route of graph.routes.values()) {
+      const points = route
+        .map((nid) => graph.nodes.get(nid))
+        .filter((n) => n !== undefined)
+        .map((n) => [n.lat, n.lon] as [number, number])
+      if (points.length > 1) {
+        L.polyline(points, { ...MISSION_ROUTE_STYLE, interactive: false }).addTo(group)
+      }
+    }
 
     const anchors = new Set<number>()
     for (const e of graph.edges) {
