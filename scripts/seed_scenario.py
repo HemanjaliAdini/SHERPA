@@ -107,7 +107,7 @@ def create_statement() -> str:
             + ")"
         )
     # Simulator clock (written only by simulate.py) and controls (written only by the C2 screen)
-    parts.append("(:Clock " + props(id=lit("CLOCK"), now=f"datetime({lit(SCENARIO_START)})") + ")")
+    parts.append("(:Clock " + props(id=lit("CLOCK"), now=f"datetime({lit(SCENARIO_START)})", run=0) + ")")
     parts.append("(:SimControl " + props(id=lit("SIM"), running=lit(False), speed=1.0, reset=lit(False)) + ")")
     tid, ttype, level, active, _, _ = THREAT
     parts.append(f"({var(tid)}:Threat " + props(id=lit(tid), type=lit(ttype), level=level, active=active) + ")")

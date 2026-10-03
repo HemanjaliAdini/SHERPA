@@ -1,8 +1,10 @@
 import { type APIRequestContext, expect, test } from '@playwright/test'
 
 // Live end-to-end test, no mocks: needs TuringDB on :6666 and `scripts/simulate.py <graph>` running on
-// that graph (run.sh starts both). Graph from SIM_GRAPH, default evac6.
-const GRAPH = process.env.SIM_GRAPH ?? 'evac6'
+// that graph (run.sh starts both). Graph from SIM_GRAPH, default evac.
+const GRAPH = process.env.SIM_GRAPH ?? 'evac'
+// The C2 screen run.sh serves (port 8080 is TuringDB's own UI when run.sh starts it)
+const C2_URL = process.env.C2_URL ?? 'http://localhost:5180'
 // Headless rendering of the 3D map with no GPU is slow, so UI updates get generous waits
 const UI_WAIT = { timeout: 15_000 }
 
@@ -21,7 +23,7 @@ test('the medic triages the batch, the system dispatches on play, and the scenar
   request,
 }) => {
   test.setTimeout(180_000)
-  await page.goto(`/?graph=${GRAPH}`)
+  await page.goto(`${C2_URL}/?graph=${GRAPH}`)
   const clock = page.locator('aside .font-mono').first()
   const missions = () => scalar(request, 'MATCH (m:Mission) RETURN count(m)')
   // The 2D map: headless Chrome draws the 3D view in software, too slowly for a 1 s tick

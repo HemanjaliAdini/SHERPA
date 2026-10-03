@@ -10,7 +10,16 @@ export type GraphNode = {
   derived: boolean
   /** facility role, vehicle kind, threat type, or triage category for casualties */
   kind: string
+  status: string
+  /** label on the map: the id, plus "→ target +N carried" for a vehicle on a mission */
+  tag: string
 }
+
+/** What is left of an active mission's route, from its vehicle to the destination */
+export type ActiveRoute = { vehicle: number; color: string; points: [number, number][] }
+
+// One colour per vehicle for its remaining route
+const ROUTE_COLORS = ['#f97316', '#22d3ee', '#a3e635', '#f472b6', '#facc15', '#c084fc']
 
 export type GraphEdge = {
   /** TuringDB edge ids drawn by this line (a two-way road has one id per direction) */
@@ -39,11 +48,14 @@ export type GeoGraph = {
   incident: Map<number, number[]>
   /** mission node id -> its route as junction ids in ROUTE_STEP order */
   routes: Map<number, number[]>
+  /** remaining route of each mission under way, for drawing */
+  activeRoutes: ActiveRoute[]
   unplaced: number
 }
 
 const NODES_QUERY =
-  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, n.status'
+  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, n.status, ' +
+  'n.progress_m'
 // Simulator bookkeeping nodes have no place on the map
 const HIDDEN_LABELS = new Set(['Clock', 'SimControl'])
 const EDGES_QUERY =
@@ -65,8 +77,9 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
   const pending = new Map<number, Omit<GraphNode, 'lat' | 'lon' | 'derived'>>()
   // Finished missions and simulator nodes are left out, together with their edges
   const hidden = new Set<number>()
+  const missionProgress = new Map<number, number>()
   for (const chunk of nodeData) {
-    const [nid, labels, id, lat, lon, type, triage, status] = chunk as unknown[][]
+    const [nid, labels, id, lat, lon, type, triage, status, progress] = chunk as unknown[][]
     for (let i = 0; i < nid.length; i++) {
       const label = (labels[i] as string[])[0] ?? ''
       if (HIDDEN_LABELS.has(label) || (label === 'Mission' && status[i] === 'done')) {
@@ -78,7 +91,10 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
         label,
         id: str(id[i]),
         kind: label === 'Casualty' ? str(triage[i]) : str(type[i]),
+        status: str(status[i]),
+        tag: str(id[i]),
       }
+      if (label === 'Mission') missionProgress.set(Number(nid[i]), Number(progress[i] ?? 0))
       if (lat[i] === null || lon[i] === null) pending.set(base.nid, base)
       else
         nodes.set(base.nid, { ...base, lat: Number(lat[i]), lon: Number(lon[i]), derived: false })
@@ -178,5 +194,45 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
     )
   }
 
-  return { nodes, edges, edgeIndex, incident, routes, unplaced: pending.size }
+  // Missions under way: the vehicle's label says where it is going and how many it carries, and its route
+  // is drawn only from the vehicle onwards (the route walked by road length up to the mission's progress)
+  const activeRoutes: ActiveRoute[] = []
+  const vehicleOrder = [...nodes.values()]
+    .filter((n) => n.label === 'Vehicle')
+    .map((n) => n.id)
+    .sort()
+  const linked = (mission: number, type: string) =>
+    edges.filter((e) => e.src === mission && e.type === type).map((e) => nodes.get(e.dst))
+  for (const [mission, junctions] of routes) {
+    const vehicle = linked(mission, 'USES')[0]
+    if (!vehicle) continue
+    const casualties = linked(mission, 'PICKS_UP').filter((n) => n !== undefined)
+    const carried = casualties.filter((c) => c.status === 'in_transit').length
+    const next =
+      casualties.find((c) => c.status === 'assigned') ?? linked(mission, 'DELIVERS_TO')[0]
+    vehicle.tag = `${vehicle.id}${next ? ` \u2192 ${next.id}` : ''}${carried ? ` +${carried}` : ''}`
+    let walked = 0
+    let k = 0
+    const progress = missionProgress.get(mission) ?? 0
+    while (k < junctions.length - 1) {
+      const a = junctions[k]
+      const b = junctions[k + 1]
+      const road = roadByPair.get(a < b ? `${a}-${b}` : `${b}-${a}`)
+      const length = road === undefined ? 0 : (edges[road].metres ?? 0)
+      if (walked + length > progress) break
+      walked += length
+      k++
+    }
+    const ahead = junctions
+      .slice(k + 1)
+      .map((j) => nodes.get(j))
+      .filter((n) => n !== undefined)
+    activeRoutes.push({
+      vehicle: vehicle.nid,
+      color: ROUTE_COLORS[vehicleOrder.indexOf(vehicle.id) % ROUTE_COLORS.length],
+      points: [[vehicle.lat, vehicle.lon], ...ahead.map((n) => [n.lat, n.lon] as [number, number])],
+    })
+  }
+
+  return { nodes, edges, edgeIndex, incident, routes, activeRoutes, unplaced: pending.size }
 }
