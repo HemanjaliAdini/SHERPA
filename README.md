@@ -14,8 +14,10 @@ uv sync
 uv run python scripts/fetch_osm.py                        # Overpass, slow, resumable
 uv run python scripts/extract_pbf.py path/to/ukraine.osm.pbf   # from a Geofabrik download
 
-# 2. Start TuringDB and the C2 map (http://localhost:5180/)
+# 2. Start TuringDB and the C2 map
 ./run.sh
+#    C2 map:              http://localhost:5180/?graph=evac2
+#    TuringDB graph view: http://localhost:8080
 
 # 3. In another terminal: build the graph and plan missions
 scripts/build_graph.sh evac2
