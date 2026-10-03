@@ -323,14 +323,16 @@ alone is left behind. Write `(Casualty)-[:HAS_FINDING {answer, confidence, sourc
 **Confidence of the recommendation** (informs the coordinator; never changes the category):
 - `confidence = 1 − Π(1 − c)` over the sources answering `yes` to the Finding that sets the category (drone: its own
   `c`; app: 0.9). If several Findings reach that category, the highest.
-- Shown as **high** ≥ 0.8, **medium** 0.5–0.8, **low** < 0.5, with the number (proposal, 7.13).
+- Shown as the number only (e.g. 0.95). No high / medium / low words: they hide detail and need cut-offs we would
+  have to invent.
 
 | Case | Sources | To the engine | Recommendation | Confidence |
 |---|---|---|---|---|
-| CAS-6 | drone bleeding yes 0.5 + app bleeding yes | yes | T1 | 1 − (0.5 × 0.1) = 0.95, high |
-| CAS-7 | drone bleeding yes 0.5, nobody else | yes | T1 | 0.5, medium |
-| CAS-8 | app breathing distress yes | yes | what doctrine gives for it | 0.9, high |
-| CAS-9 | drone sees someone lying 0.8, nothing serious | `unsure` on the serious Findings | none: "coordinator decides" | — |
+| CAS-6 | drone bleeding yes 0.5 + app bleeding yes | yes | T1 | 1 − (0.5 × 0.1) = 0.95 |
+| CAS-7 | drone bleeding yes 0.5, nobody else | yes | T1 | 0.5 |
+| CAS-8 | app breathing distress yes | yes | T1 (tension pneumothorax) | 0.9 |
+| CAS-9 | drone sees someone lying 0.8, nothing serious | `unsure` on the serious Findings; `mobility` no | none: "coordinator decides" | — |
+| CAS-11 | drone sees someone walking 0.7 (`Walking`), nothing serious | `mobility` yes | T3 (MITT: walks) | 0.7 |
 | CAS-10 | drone bleeding yes 0.8 + app bleeding no | `unsure` | none from bleeding | "sources disagree: drone yes 0.8 · app no" |
 
 **Recommendation (step 4):**
@@ -341,6 +343,9 @@ alone is left behind. Write `(Casualty)-[:HAS_FINDING {answer, confidence, sourc
 - Stored on the casualty: `recommended_category`, `recommended_rank`, `recommendation_confidence`,
   `recommendation_reason` (the `yes` Findings with their sources and confidences, the injuries they indicate, and any
   "sources disagree").
+- **Our own rule from MITT, after the doctrine** (6.18): if the doctrine gives no category and `mobility` is `yes`
+  (walks), recommend **T3**, reason "walks (MITT)". The doctrine never reaches Minimal (7.15), so this fills T3. A
+  doctrine T1 or T2 always wins.
 - No category reached: "no recommendation: doctrine does not rank this, coordinator decides". Never "can wait"
   (`DECISION-SPEC.md` section 5).
 - Recomputed whenever an observation for that casualty is applied, so late information updates it.
@@ -350,8 +355,8 @@ goes to the nearest casualty within 50 m of its `lat, lon`; if none, it creates 
 (`status = 'reported'`, `event_id` set). Seen twice, counted once. Later, not now: time and position uncertainty.
 
 **On the C2 screen:** the queue puts untriaged casualties first, ordered by `recommended_rank`, then the MARCH letter
-of their most urgent present Finding, then time of injury. Each card shows the recommendation, its confidence (high,
-medium, low, with the number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
+of their most urgent present Finding, then time of injury. Each card shows the recommendation, its confidence (the
+number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
 ambulatory from `mobility`): one click accepts, or the coordinator picks another.
 
 **Drone images (SARD).** We use **SAR Detection** (Roboflow Universe, CC BY 4.0,
@@ -448,7 +453,7 @@ Each one: what we chose and why. Do not reopen without a new fact.
     - *Why:* speed matters, and the rules come from published doctrine with page and quote on every line, the
       medical knowledge we lack. Deterministic and explainable: every recommendation lists its findings and sources.
     - *Caveats:* nothing in the graph is clinically signed off yet; only 8 of 37 TCCC findings reach a category, so
-      the demo uses findings that do (7.14).
+      the demo uses findings that do (7.15).
     - *Rejected:* our own ad-hoc MARCH ranking (no clinical basis); a learned model (no data, not explainable).
 14. **Every source answers Noo's `Finding`s with yes / no / unsure; fusion gives the engine one answer per Finding,
     and the confidence only informs** (3 Oct; rule in section 5). One `yes` is enough (as in the engine), a `yes`
@@ -466,6 +471,10 @@ Each one: what we chose and why. Do not reopen without a new fact.
     soldiers on the spot with the triage app (radio reports later, 6.17). This is why sensor fusion exists in this product.
 17. **Radio is a future source, not in the demo** (3 Oct). Not in the story, and it depended on two other tasks.
     In the pitch: speech to text, then an LLM extracts `Finding`s from the report; the doctrine rules still decide.
+18. **"Walks → T3" from MITT, after the doctrine** (3 Oct). Rules we add come from published triage tools, never
+    invented. MITT (the NHS Major Incident Triage Tool, section 3) sends walking casualties to T3 after catastrophic
+    haemorrhage. It fills the gap left by the doctrine, which never reaches Minimal, and uses `mobility`, which the
+    drone (SAR Detection postures) and the app give.
 
 ---
 
@@ -531,9 +540,9 @@ To settle together. None blocks the demo now.
     vehicle pickup/transport and receiving-team handover. Per-casualty history is captured while the page is open,
     preserved when switching cases, and cleared on reset. Map speech bubbles are no longer rendered.
 
-13. **Confidence bands and drone confidences** (section 5): high ≥ 0.8, medium 0.5–0.8, low < 0.5, and the drone's
-    confidences in the demo script, are our proposal. To check with Noo and his frontline contact.
-14. **Doctrine coverage and sign-off.** Checked on `triage_v3.jsonl` with the engine's own logic (TCCC-cited links
+14. **Drone confidences** in the demo script (section 5) are our proposal. To check with Noo and his frontline
+    contact.
+15. **Doctrine coverage and sign-off.** Checked on `triage_v3.jsonl` with the engine's own logic (TCCC-cited links
     only): **8 Findings reach a category.**
     - Immediate (T1): `bleeding_severe`, `untreated_limb_haemorrhage`, `untreated_abdominal_or_pelvic_haemorrhage`
       (massive haemorrhage); `airway_obstruction`, `airway_obstructed_or_impending` (airway obstruction);
@@ -545,8 +554,7 @@ To settle together. None blocks the demo now.
       no injury at all.
     - For the demo: of the drone's Findings only `bleeding_severe` (camera) and `breathing_distress` (thermal) change
       the category; lying, cold and responding show on the card as information.
-    - Open: add rules of our own from a published triage tool, e.g. MITT's "walks → T3" (would fill the T3 gap and
-      uses `mobility`). Medic sign-off of the doctrine still needed.
+    - T3 now comes from MITT's "walks" rule (6.18). Medic sign-off of the doctrine still needed.
 
 ---
 
