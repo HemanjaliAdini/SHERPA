@@ -310,7 +310,7 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     zoomOut: () => map.current?.zoomOut(),
     resetView: () => map.current?.flyToBounds(HOME, { ...HOME_FIT, duration: 0.6 }),
     focusNodes,
-    pan: (dx, dy) => map.current?.panBy([dx, dy], { duration: 0.2 }),
+    pan: (dx, dy) => map.current?.panBy([dx, dy], { animate: false }),
     rotate: () => undefined,
     tilt: () => undefined,
   }))

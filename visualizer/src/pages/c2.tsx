@@ -27,6 +27,7 @@ import {
   formatClock,
 } from '@/components/c2/scenario-data'
 import { type Selection, neighbourhood } from '@/components/c2/selection'
+import { useArrowCamera } from '@/components/c2/use-arrow-camera'
 import { useScenarioStore } from '@/stores'
 
 // deck.gl is only downloaded when the 3D view is first opened
@@ -110,9 +111,6 @@ const KEY_HELP = [
   '/ query',
   'L legend',
 ].join(' \u00b7 ')
-const PAN_PX = 150
-const TURN_DEG = 15
-const TILT_DEG = 10
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
@@ -132,6 +130,7 @@ export const TC2Page = () => {
   const [mode, setMode] = useState<ViewMode>('3d')
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
+  useArrowCamera(mapRef)
 
   const graph = useQuery({
     queryKey: ['c2-graph', graphName, change],
@@ -194,18 +193,6 @@ export const TC2Page = () => {
         return
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      const map = mapRef.current
-      const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
-        e.key
-      ]
-      if (arrow) {
-        e.preventDefault()
-        if (e.shiftKey) {
-          if (arrow[0]) map?.rotate(arrow[0] * TURN_DEG)
-          else map?.tilt(-arrow[1] * TILT_DEG)
-        } else map?.pan(arrow[0] * PAN_PX, arrow[1] * PAN_PX)
-        return
-      }
       if (e.key === 'v' || e.key === 'V') setMode((m) => (m === '2d' ? '3d' : '2d'))
       else if (e.key === '+' || e.key === '=') mapRef.current?.zoomIn()
       else if (e.key === '-' || e.key === '_') mapRef.current?.zoomOut()
