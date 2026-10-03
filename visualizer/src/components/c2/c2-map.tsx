@@ -54,6 +54,8 @@ export type C2MapHandle = {
   /** Turn and tilt the camera, in degrees; only the 3D view can */
   rotate: (degrees: number) => void
   tilt: (degrees: number) => void
+  /** Swing the camera to look straight down; only the 3D view tilts, so 2D ignores it */
+  topDown: () => void
 }
 
 async function loadGeoJson(name: string): Promise<GeoJSON.FeatureCollection> {
@@ -313,6 +315,7 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     pan: (dx, dy) => map.current?.panBy([dx, dy], { animate: false }),
     rotate: () => undefined,
     tilt: () => undefined,
+    topDown: () => undefined,
   }))
 
   // Zoom to the selection on request, so a query result is brought into view

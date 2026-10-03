@@ -3,6 +3,7 @@
 import {
   type Color,
   FlyToInterpolator,
+  LinearInterpolator,
   type MapViewState,
   type PickingInfo,
   WebMercatorViewport,
@@ -63,7 +64,7 @@ type Props = {
 
 type ViewState = MapViewState & {
   transitionDuration?: number | 'auto'
-  transitionInterpolator?: FlyToInterpolator
+  transitionInterpolator?: FlyToInterpolator | LinearInterpolator
   onTransitionEnd?: () => void
 }
 
@@ -73,6 +74,9 @@ const BEARING = -15
 const VILLAGE_LABEL_MIN_ZOOM = 11
 const DIMMED = 0.12
 const ORBIT_DEG_PER_SEC = 6
+// Double-tap Shift+Up: tilt smoothly to look straight down, keeping position, zoom and bearing
+const TOP_DOWN_MS = 600
+const TOP_DOWN_INTERPOLATOR = new LinearInterpolator(['pitch'])
 function rgba(color: string, alpha = 1): [number, number, number, number] {
   const a = Math.round(alpha * 255)
   if (color.startsWith('#')) {
@@ -280,6 +284,13 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     pan,
     rotate: (degrees) => turn(degrees, 0),
     tilt: (degrees) => turn(0, degrees),
+    topDown: () =>
+      setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => ({
+        ...v,
+        pitch: 0,
+        transitionDuration: TOP_DOWN_MS,
+        transitionInterpolator: TOP_DOWN_INTERPOLATOR,
+      })),
   }))
 
   // Fly to the selection on request, so a query result is brought into view
