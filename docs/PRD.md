@@ -78,16 +78,18 @@ as it is now.
 
 ### Nice to have
 
-1. **Real detections from drones and devices.** Use a vision model on drone images instead of simulated detections, and gather as much information as possible from drones or electronic devices (such as phones) to feed triage.
+1. **Real detections from drones and devices.** Use a vision model on drone images instead of simulated detections, and gather as much information as possible from drones or electronic devices (such as phones) to feed triage. *Now planned: sensor fusion (section 5, "Sensor fusion"); the vision model is task A2f.*
 2. **Request more resources.** When UGVs or medics are short, send a message or call to one of us, simulating getting more UGVs ready as soon as possible.
 3. **Plain-language questions** to a local LLM, translated into graph queries.
-4. **A triage suggestion,** possibly based on the NHS Major Incident Triage Tool (below). It only suggests; the medic decides.
+4. **A triage suggestion,** possibly based on the NHS Major Incident Triage Tool (below). It only suggests; the medic decides. *Now planned: a recommendation from the TCCC doctrine graph (6.13).*
 
 ![NHS Major Incident Triage Tool](triage-mitt.png)
 
 ### Out of scope (deliberately)
 
-- **AI that decides clinical priority.** The system executes the medic's triage; it never sets it.
+- **AI that decides clinical priority.** The system *recommends* a triage category from published doctrine rules
+  (TCCC, 6.13), with its reasons; the medical coordinator accepts or changes it. The system never sets it alone, and
+  no machine-learned model decides a category.
 - **Real patient data.** The scenario is synthetic.
 - **Anything that could work as targeting or weapons guidance.** This is casualty care only.
 - **Cloud services.** Everything runs on our laptops, offline, as it would in the field.
@@ -119,6 +121,10 @@ as it is now.
 - **Everything that happens during a run is an `Event`** (6.11): a closed bridge, a new casualty, a drone or radio
   observation, more UGVs. The demo script, buttons and the radio create events; the simulator applies them on the
   tick.
+- **Sensor fusion feeds a triage recommendation** (section 5, "Sensor fusion"). Drones, the soldier's triage app and
+  radio reports become `Observation`s of doctrine findings ("bleeding badly?") with a confidence. Fusion decides
+  which findings are present; the doctrine graph (Noo's, from the TCCC handbook) turns them into a recommended
+  category with its reasons. The medical coordinator accepts or changes it.
 - **A mission** is vehicle → casualty → medical point. A UGV drops at a handover or collection point; the casualty
   then waits for an ambulance to Role 1 or higher (the second leg).
 
@@ -142,10 +148,16 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 
 (:Casualty {id, lat, lon, time_of_injury, status, triage_category, mobility,       ✅
             mist_mechanism, mist_injuries, mist_signs, mist_treatment,
-            march_priority, event_id})                                             🔜 A2, A1
+            recommended_category, recommended_rank, recommendation_reason,
+            event_id})                                                             🔜 A2, A1
 
 (:Event {id, at, type, payload, status, source, applied_at, error})                🔜 A1
-(:Observation {id, at, source, march, finding, confidence, media, event_id})       🔜 A2
+(:Observation {id, at, received_at, source, finding, value, confidence,           🔜 A2
+               lat, lon, media, event_id})
+
+Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):          🔜 A2
+(:Finding {key, label, march, ...}) (:Injury {key, ...}) (:TriageCategory {key, rank})
+(:Condition {size}) (:Intervention) (:ProviderTier) (:KitItem) ...
 
 (:Threat {id, type, level, active})                                                ✅
 
@@ -172,6 +184,10 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 
 (:Casualty)-[:HELD_AT]->(:MedicalPoint)                                            ✅
 (:Observation)-[:ABOUT]->(:Casualty)                                               🔜 A2
+(:Observation)-[:OF]->(:Finding)                                                   🔜 A2
+(:Casualty)-[:HAS_FINDING {p, sources, updated_at}]->(:Finding)    fusion output   🔜 A2
+(:Finding)-[:INDICATES]->(:Injury)-[:TRIAGES_TO]->(:TriageCategory)  doctrine      🔜 A2
+(:Finding)-[:PART_OF]->(:Condition)-[:INDICATES]->(:Injury)          doctrine A∧B  🔜 A2
 (:MedicalPoint)-[:REQUESTS_VEHICLE | :REQUESTS_MEDICS]->(:MedicalPoint)            bonus
 ```
 
@@ -205,7 +221,7 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 |---|---|---|---|
 | `road_closed` | `{osm_way_id}` | Every `ROAD` with that `osm_way_id` gets `status = 'closed'` and `closed_by = <event id>`; then the re-route rule below. | script, button |
 | `casualty_reported` | `{id, lat, lon, time_of_injury, mist_mechanism, mist_injuries, mist_signs, mist_treatment}` | New `Casualty` with `status = 'reported'`, linked `NEAR` its junction (`snap` in `seed_scenario.py`). | script, radio |
-| `observation` | `{casualty_id, source, march, finding, confidence, media}` | New `Observation` `-[:ABOUT]->` the casualty; recompute its `march_priority`. | script (drone, app), radio |
+| `observation` | `{casualty_id?, source, finding, value, confidence, lat, lon, observed_at?, media?}` | New `Observation`, associated to a casualty (rule in "Sensor fusion"), `-[:OF]->` its `Finding`; re-fuse that casualty and update its recommendation. | script (drone, app), radio |
 | `vehicle_requested` | `{type, count, delay_min, at_point}` | Creates `count` `vehicle_added` events at `at + delay_min`. | button |
 | `vehicle_added` | `{id, type, at_point}` | New idle `Vehicle` at the medical point `at_point`, with the seed values of its type. | `vehicle_requested` |
 
@@ -217,12 +233,117 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
   route, to the nearest reachable destination of its type.
 - **Reset** (`reset_writes`): scripted events go back to `pending` and live ones are deleted; nodes created by an
   event (they carry `event_id`) are deleted with their edges; roads with a `closed_by` reopen.
-- **Observation (draft, A2 decides):** `source` is `medic`, `drone`, `radio` or `app`; `march` is the list of MARCH
-  letters affected (`M` massive haemorrhage, `A` airway, `R` respiration, `C` circulation, `H` hypothermia or head
-  injury); `finding` is the text; `confidence` 0 to 1; `media` an image path under `visualizer/public/media/`.
-  `Casualty.march_priority` = position of the first affected letter in M, A, R, C, H over all its observations
-  (0 = most urgent); none means after the others. It orders the queue only: the medic still sets the triage (section 3, out
-  of scope).
+
+### Sensor fusion and the triage recommendation (A2)
+
+The aim: several imperfect sources about the same casualty become **one recommended triage category, with its
+reasons**, fast, for the medical coordinator to accept or change. Rules, not a learned model (6.13).
+
+**The chain, end to end:**
+
+```
+ sources              drone (camera, thermal, speaker+mic) · soldier's triage app · radio report · medic
+    │  each emits Observations: one doctrine Finding, yes/no, a confidence, a time, a position
+    ▼
+ 1 clean              raw data → Finding ("person lying, red patch on leg" → bleeding_severe = yes, 0.5)
+ 2 associate          which casualty? the given casualty_id, else the nearest one within 50 m, else a new casualty
+ 3 combine            per casualty and Finding → probability p (rule below) → HAS_FINDING {p, sources}
+ 4 recommend          Findings with p >= 0.5 → INDICATES → Injury → TRIAGES_TO → most urgent TriageCategory
+    ▼
+ medical coordinator  sees the recommendation, its reasons and sources; accepts with one click or changes it
+    ▼
+ simulator            dispatches as today (triage_category, mobility)
+```
+
+This is the classic fusion model (JDL levels 0 to 3: source preprocessing, object assessment, situation assessment)
+cut to what the demo needs. Step 4 is a multi-hop graph query, which is what the TuringDB challenge asks for.
+
+**What Noo built and what we reuse.** Branches `feat/triage-parser` and `feat/triage-app`
+(`solider-triage-sideproject/`; read `DECISION-SPEC.md`, `SCHEMA.md`, `HANDOFF.md`):
+
+| Piece | What it is | How we use it |
+|---|---|---|
+| Doctrine graph (`app/assets/graph/triage_v3.jsonl`, 472 nodes, 774 edges) | The triage **rules** from the TCCC handbook (and MOD guidelines), each line with page and quote: `Finding -INDICATES-> Injury -TRIAGES_TO-> TriageCategory`, plus treatments, who may do them and kit. Static: it never stores casualties. | Copied into the repo (`data/doctrine/triage_v3.jsonl`) and loaded into graph `evac` at build. Read-only. |
+| Engine (`app/src/triage/assess.ts`, `order.ts`) | Applies the rules to one casualty's yes answers: injuries, category, steps to do now, next question; then orders casualties with tie-break rules. | We use the one-casualty part only, as the queries Q1, Q2 and Q11 of `DECISION-SPEC.md`, in `scripts/fusion.py`. Ordering stays with our dispatch (triage, then time of injury). |
+| App (`app/src/app/`) | Phone app for a soldier with no medical training next to a casualty: big yes/no questions, recommendation on the spot, no network (TuringDB runs on the phone). | **A source.** Its answers are already `Finding` keys. With a connection it sends them (`observation` events, `source = 'app'`); without one, the soldier still gets the recommendation on the phone, and the answers are sent later with the time they were given. |
+
+So the doctrine graph is the medical brain for both: on the phone it reads one soldier's answers; in C2 it reads
+the fused findings from every source. Fusion's output (a set of present Findings) has the same shape as the app's
+input.
+
+**Vocabulary: Noo's `Finding` keys.** 37 come from the TCCC handbook, each with a MARCH letter. The ones the demo
+uses (they reach a category or matter for MARCH):
+
+| MARCH | `Finding` keys |
+|---|---|
+| M massive haemorrhage | `bleeding_severe`, `untreated_limb_haemorrhage`, `untreated_junctional_haemorrhage`, `tourniquet_time` |
+| A airway | `airway_obstruction`, `airway_obstructed_or_impending`, `conscious`, `unconscious`, `unconscious_breathing`, `unconscious_not_breathing` |
+| R respiration | `breathing_distress`, `chest_wound`, `torso_trauma`, `no_pulse_or_respirations` |
+| C circulation | `radial_pulse_weak`, `haemorrhagic_shock`, `haemorrhage_controlled` |
+| H hypothermia, head | `cold_shivering`, `head_injury_signs`, `mental_status_altered`, `decreased_level_of_consciousness` |
+| (ours) | `mobility`: walks or not. Not in the doctrine; it presets litter or ambulatory for dispatch. |
+
+**What each source can emit, and its weight** (weights and confidences are our assumptions, 7.13):
+
+| Source | Emits | Typical confidence | Weight | In the demo |
+|---|---|---|---|---|
+| Drone camera | position (association), `mobility` = no (lying, still), `bleeding_severe` | 0.7–0.9 position and posture; 0.4–0.6 bleeding | 0.6 | SARD image with label "Lying"; findings written in the script |
+| Drone thermal | `cold_shivering`, `breathing_distress` | 0.3–0.5 | 0.6 | script |
+| Drone speaker and mic | `conscious` / `unconscious` ("can you hear me? raise a hand") | 0.6–0.8 | 0.6 | script, audio clip if there is time |
+| Soldier's triage app | any soldier-askable `Finding` | 0.9 (a person next to the casualty) | 0.9 | script, as if the app sent it |
+| Radio report | `Finding`s from a spoken MIST or 9-line report, by keyword (C1) | 0.8 | 0.8 | Adini's radio, Parakeet speech to text |
+| Medic in person | any `Finding` | 1.0 | overrides | the coordinator's own confirmation |
+
+Out: RF detection of phones (position only, nothing clinical); UGV sensors on arrival (later).
+
+**Fusion rule (step 3), per casualty and `Finding`:**
+- Keep only the newest observation of each source (by `at`, the time it was observed, not when it arrived).
+- A medic observation decides the value outright.
+- Otherwise `support = 1 − Π(1 − weight × confidence)` over the observations saying yes, `against` the same over
+  those saying no, and `p = support × (1 − against)`. Two weak sources that agree give a strong `p`; a reliable "no"
+  pulls it down.
+- Write `(Casualty)-[:HAS_FINDING {p, sources, updated_at}]->(Finding)`. Present means `p >= 0.5`.
+- Example: drone 0.5 and radio 0.7 say `bleeding_severe`: `1 − (1 − 0.6·0.5)(1 − 0.8·0.7) = 0.69`, present.
+
+**Recommendation (step 4):**
+- Injuries = those `INDICATES` from a present `Finding` (Q1), plus those from a `Condition` whose member Findings
+  are all present (Q11).
+- Category = the most urgent `TRIAGES_TO` among them (Q2): `immediate` → T1, `delayed` → T2, `minimal` → T3,
+  `expectant` → shown as "Expectant" (the coordinator picks; 7.2).
+- Stored on the casualty: `recommended_category`, `recommended_rank`, `recommendation_reason` (the present Findings
+  with their sources and `p`, and the injuries they indicate).
+- No category reached: "no recommendation: doctrine does not rank this, coordinator decides". Never "can wait"
+  (`DECISION-SPEC.md` section 5).
+- Recomputed whenever an observation for that casualty is applied, so late information updates it.
+
+**Association (step 2), simple version:** an observation with a `casualty_id` goes to that casualty. Without one, it
+goes to the nearest casualty within 50 m of its `lat, lon`; if none, it creates a new casualty there
+(`status = 'reported'`, `event_id` set). Seen twice, counted once. Later, not now: time and position uncertainty.
+
+**On the C2 screen:** the queue puts untriaged casualties first, ordered by `recommended_rank`, then the MARCH letter
+of their most urgent present Finding, then time of injury. Each card shows the recommendation, its reasons and a
+chip per source (drone, app, radio). The triage buttons come preselected with the recommendation (and litter or
+ambulatory from `mobility`): one click accepts, or the coordinator picks another.
+
+**Drone images (SARD).** The Search and Rescue Image Dataset (IEEE DataPort, DOI 10.21227/ahxm-k331): 1,981 drone
+images with people labelled Standing, Walking, Running, Sitting, Lying or Not Defined; needs an IEEE DataPort
+subscription. Options: (A) now: a few images with their labels used as the drone's output; (B) later, Adolfo, if
+there is time: a pretrained person detector (YOLO) run offline on 5–10 drone frames for real boxes and confidences,
+posture from the label; (C) after the hackathon: fine-tune on SARD to detect lying people.
+
+**Precedent.** Team Chiron (CMU, Pittsburgh), 4th in round 1 of the DARPA Triage Challenge, fused per-sign vision
+models from a robot with a Bayesian network written by hand with medics, no training. Correct signs went from 14 %
+(robot alone) to 53 %, and coverage from 31 % to 95 %: fusion fills what one sensor misses. Our rule is the
+one-night version; their network is the next step. The DARPA signs (severe haemorrhage, respiratory distress, head,
+torso and limb trauma, ocular, verbal and motor alertness, heart and respiratory rate) map onto the Findings above.
+
+**Sources:** [Team Chiron paper](https://arxiv.org/html/2512.18908v1) ·
+[DARPA Triage Challenge](https://www.darpa.mil/news/2023/triage-challenge-seeks-teams) ·
+[SARD](https://ieee-dataport.org/documents/search-and-rescue-image-dataset-person-detection-sard) ·
+[JDL fusion levels](https://en.wikipedia.org/wiki/Data_fusion) ·
+[TCCC MARCH PAWS](https://tccc.org.ua/files/downloads/module-5-tactical-trauma-assessment-en.pdf) ·
+[TCCC card DD 1380](https://jts.health.mil/assets/docs/forms/DD_form_1380_TCCC_Card_Instructions.pdf) ·
+explainer page: https://claude.ai/artifact/JvCaGu2cDVyh3SLi9jnADy
 
 ---
 
@@ -284,6 +405,18 @@ Each one: what we chose and why. Do not reopen without a new fact.
 12. **The demo is scripted** (3 Oct). Drone and app images and radio clips are prepared files with their findings
     written by us; there is no vision model. We say so in the pitch: in production a vision model fills the same
     `Observation`.
+13. **The triage recommendation comes from Noo's TCCC doctrine graph; the medical coordinator decides** (3 Oct).
+    - *Why:* speed matters, and the rules come from published doctrine with page and quote on every line, the
+      medical knowledge we lack. Deterministic and explainable: every recommendation lists its findings and sources.
+    - *Caveats:* nothing in the graph is clinically signed off yet; only 8 of 37 TCCC findings reach a category, so
+      the demo uses findings that do (7.14).
+    - *Rejected:* our own ad-hoc MARCH ranking (no clinical basis); a learned model (no data, not explainable).
+14. **Every source emits Noo's `Finding`s with a confidence, fused per casualty and Finding** (3 Oct), rule in
+    section 5. Fusion's output has the same shape as the app's input, so one brain serves the phone and C2.
+    - *Rejected:* a separate vocabulary per source (nothing could be combined); a Bayesian network tonight (the
+      next step, after the demo).
+15. **Association, simple version, is in** (3 Oct): nearest casualty within 50 m, else a new one. Without it there is
+    no fusion, only separate reports. Time and position uncertainty: later.
 
 ---
 
@@ -345,6 +478,10 @@ To settle together. None blocks the demo now.
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
 
+13. **Source weights and confidences** (section 5) are our assumptions. To check with Noo and his frontline contact.
+14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
+    (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
+
 ---
 
 ## 8. Plan
@@ -357,22 +494,30 @@ closes Sunday 12:00; Demo Day starts 13:00.
 
 **Where we are:** Layers 0, 1, 2 and 4 are done (8.6). The medic triages from MIST reports and presses Play; the
 system dispatches, vehicles drive the real roads, hand over to ambulances and deliver, one commit per minute; voice
-questions work. **Missing:** things that happen during the run (events), sensor fusion with MARCH, the demo script.
+questions work. **Missing:** things that happen during the run (events), sensor fusion and the triage
+recommendation, the demo script.
 
 ### 8.1 The demo
 
-Draft, for Vashti to turn into `scripts/demo_script.py` (B1). Minutes are tuned by running it.
+One scene, three moments, then the objections. Draft for Vashti to turn into `scripts/demo_script.py` (B1); minutes
+are tuned by running it. **Thread:** too many casualties, too few vehicles, one hour. The system says who goes first
+and gets them there, even when everything changes.
 
-1. **05:30.** Five casualties reported with MIST. The medic triages them on screen and presses Play; the system
-   dispatches.
-2. **~05:38. Drone image:** a sixth casualty with a massive bleed (`casualty_reported` + `observation` with `M`).
-   It goes to the top of the queue; the medic triages it.
-3. **~05:42. Radio:** a medic reports that a casualty has stopped breathing (`observation` with `A`/`R`, from the
-   radio, C1). The queue reorders.
-4. **~05:45. The bridge is blown** (7.9, `osm_way_id` 1297140381) while a UGV carrying a T1 is about to cross it
-   (`road_closed`). The system re-routes; the map shows the new route and the new ETA. **This is the edge case.**
-5. **UGVs are short:** the operator requests two more (`vehicle_requested`); they arrive 10 minutes later.
-6. **Voice:** "who is past the golden hour?", "situation summary". Click a casualty: its drone photo.
+1. **Information arrives from everywhere, and the system says who goes first.** 05:30: five casualties reported.
+   ~05:36: a drone sees a sixth person lying still near the front (`observation`s: position, `mobility` = no,
+   `bleeding_severe` 0.5; no casualty there, so a new one is created). ~05:38: a soldier's triage app answers
+   "bleeding badly? yes" for the same person (`source = 'app'`, 0.9): fused, the card shows **T1 recommended:
+   bleeding badly (drone, app)**. ~05:40: a radio report says another casualty is struggling to breathe
+   (`breathing_distress`, radio, C1); the queue reorders. The coordinator accepts with one click each.
+   *(Sensor fusion and Noo's doctrine graph.)*
+2. **The system gets each one to the right place.** Vehicles, routes, the UGV-to-ambulance relay, no manual
+   logistics. *(What already works.)*
+3. **The world changes: the bridge is blown** (7.9, `osm_way_id` 1297140381) while a UGV carrying a T1 is about to
+   cross it (`road_closed`). The system re-routes and the casualty still arrives. **The strong moment.**
+4. **Close by answering objections.** "No network at the front?" The soldier's app gives the recommendation on the
+   phone and sends when it can; the late answers fuse with their real time. "Who decides?" The coordinator; the
+   system recommends from TCCC doctrine and shows why. Optional: a voice question ("situation summary") and more
+   UGVs (`vehicle_requested`).
 
 ### 8.2 How we work: everything that happens during a run is an event
 
@@ -408,14 +553,27 @@ A1 lands.
   minute; a loaded mission that crossed it gets a new route and still delivers; reset reopens the road and puts the
   event back to pending), and on screen a vehicle takes another road when the bridge falls.
 
-**A2. Observation format and MARCH ranking (sensor fusion).** Owner: Adolfo. ⬜ Blocks C1 and C2 (their payloads).
-- Settle the `Observation` fields and the ranking rule in section 5 (a draft is there).
-- Handler `observation` in `scripts/events.py`: creates the `Observation` and its `ABOUT` edge, recomputes
-  `Casualty.march_priority`.
-- UI: the queue order in `visualizer/src/components/c2/scenario-data.ts` (sort at line 115) becomes untriaged first,
-  then `march_priority`, then time of injury. The card in `casualty-queue.tsx` shows the MARCH letters and the
-  sources.
-- **Done when:** an `observation` event with `M` on CAS-5 puts CAS-5 first in the queue at its minute.
+**A2. Sensor fusion and the triage recommendation.** Owner: Adolfo. ⬜ The contract is in section 5, "Sensor
+fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
+- **A2a. Doctrine graph in `evac`.** Copy `solider-triage-sideproject/app/assets/graph/triage_v3.jsonl` from branch
+  `feat/triage-app` to `data/doctrine/triage_v3.jsonl`. Load it in `scripts/build_graph.sh` after the scenario: with
+  `LOAD JSONL` if TuringDB can load into an existing graph, else a small `scripts/seed_doctrine.py` that creates its
+  nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
+- **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → `p` per Finding
+  (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
+  `tests/test_fusion.py`: drone 0.5 + radio 0.7 on `bleeding_severe` gives `p` 0.69 and T1; a medic "no" overrides;
+  only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
+- **A2c. The `observation` handler** in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
+  `OF`, re-fuse, write `HAS_FINDING` and the `recommended_*` fields. Reset: observations and the casualties they
+  created carry `event_id` (generic rule). **Done when:** an `observation` event makes the recommendation appear on
+  the casualty at its minute.
+- **A2d. The screen.** `visualizer/src/components/c2/scenario-data.ts` (sort at line 115): untriaged first, by
+  `recommended_rank`, MARCH, time of injury. `casualty-queue.tsx`: recommendation, reasons and source chips on the
+  card; triage and mobility buttons preselected. **Done when:** the coordinator accepts a recommendation with one
+  click.
+- **A2e. Demo observations** for B1: the drone, app and radio entries of 8.1 as `observation` events, with the
+  SARD images (option A) under `visualizer/public/media/`.
+- **A2f. Optional, after the freeze items:** option B, a real pretrained detector on drone frames.
 
 **B1. The demo script.** Owner: Vashti. ⬜ Needs A1.
 - Create `scripts/demo_script.py` with `EVENTS` (format in section 5), starting from 8.1.
@@ -432,15 +590,16 @@ A1 lands.
 - ✅ Ukrainian: questions asked in Ukrainian are answered in Ukrainian (`scripts/voice_text.py`).
 - A question that reads the applied events ("what happened in the last ten minutes?") in `scripts/voice_query.py`.
 
-**C1. Radio.** Owner: Adini. ⬜ Needs A1 and A2.
+**C1. Radio.** Owner: Adini. ⬜ Needs A1 and A2c.
 - A recorded radio message (a MIST report, spoken) becomes text, then an `observation` event (and a
   `casualty_reported` if the casualty is new).
 - Reuse Parakeet: add `POST /radio` to `scripts/voice_server.py`; `Models.transcribe` already turns a WAV into text.
-  Text to MARCH letters by keywords (bleed → `M`, airway → `A`, not breathing → `R`...), agreed with A2.
+  Text to `Finding` keys by keywords (bleeding → `bleeding_severe`, struggling to breathe → `breathing_distress`,
+  unconscious → `unconscious`...; vocabulary in section 5), `source = 'radio'`, confidence 0.8.
 - A "Radio" button on the C2 page that plays a prepared clip from `data/radio/` and sends it.
 - **Done when:** playing a clip adds an observation to the right casualty card within one tick.
 
-**C2. Photo on a casualty.** Owner: Adini. ⬜ Needs A2.
+**C2. Photo on a casualty.** Owner: Adini. ⬜ Needs A2c.
 - Scripted drone and app images in `visualizer/public/media/`; an observation's `media` is the path
   (`/media/<file>.jpg`).
 - `inspectNode` in `visualizer/src/components/c2/inspector.ts`: for a `Casualty`, show the images of its
