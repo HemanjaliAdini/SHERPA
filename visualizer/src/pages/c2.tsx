@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
 import { C2Map, type C2MapHandle } from '@/components/c2/c2-map'
+import { CasualtyQueue } from '@/components/c2/casualty-queue'
 import {
   EDGE_STYLE,
   FACILITY_COLOR,
@@ -18,6 +19,12 @@ import {
 import { fetchGraph } from '@/components/c2/graph-data'
 import { Kbd, MapControls } from '@/components/c2/map-controls'
 import { QueryBar } from '@/components/c2/query-bar'
+import {
+  type Casualty,
+  activeQueue,
+  fetchScenario,
+  formatClock,
+} from '@/components/c2/scenario-data'
 import { type Selection, neighbourhood } from '@/components/c2/selection'
 import { useScenarioStore } from '@/stores'
 
@@ -84,7 +91,8 @@ const Legend = () => (
   </div>
 )
 
-const KEY_HELP = '+ / - zoom \u00b7 R reset \u00b7 Esc clear \u00b7 / query \u00b7 L legend'
+const KEY_HELP =
+  '1-9 casualty \u00b7 + / - zoom \u00b7 R reset \u00b7 Esc clear \u00b7 / query \u00b7 L legend'
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
@@ -93,10 +101,12 @@ const isTyping = (target: EventTarget | null) =>
 export const TC2Page = () => {
   const graphName = useScenarioStore((state) => state.graph)
   const change = useScenarioStore((state) => state.change)
+  const now = useScenarioStore((state) => state.now)
   const [selection, setSelection] = useState<Selection | null>(null)
   const [fitRequest, setFitRequest] = useState(0)
   const [queryOpen, setQueryOpen] = useState(false)
   const [legendOpen, setLegendOpen] = useState(false)
+  const [focusNid, setFocusNid] = useState<number | null>(null)
   const mapRef = useRef<C2MapHandle>(null)
 
   const graph = useQuery({
@@ -104,6 +114,28 @@ export const TC2Page = () => {
     queryFn: () => fetchGraph(graphName, change),
     staleTime: Number.POSITIVE_INFINITY,
   })
+
+  const scenario = useQuery({
+    queryKey: ['c2-scenario', graphName, change],
+    queryFn: () => fetchScenario(graphName, change),
+    staleTime: Number.POSITIVE_INFINITY,
+  })
+  const queue = scenario.data ? activeQueue(scenario.data.casualties) : []
+
+  const selectNode = (nid: number | null) => {
+    setFocusNid(nid)
+    setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid))
+  }
+  const locateCasualty = (c: Casualty) => {
+    selectNode(c.nid)
+    mapRef.current?.focusNodes(c.junction === null ? [c.nid] : [c.nid, c.junction])
+  }
+  // Keyboard handler reads the latest queue through a ref
+  const queueRef = useRef<{ queue: Casualty[]; locate: (c: Casualty) => void }>({
+    queue,
+    locate: locateCasualty,
+  })
+  queueRef.current = { queue, locate: locateCasualty }
 
   // A selection refers to one branch's graph; drop it when the branch changes
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on branch switch only
@@ -115,6 +147,7 @@ export const TC2Page = () => {
       if (e.key === 'Escape') {
         if (isTyping(e.target)) (e.target as HTMLElement).blur()
         setSelection(null)
+        setFocusNid(null)
         return
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
@@ -122,7 +155,10 @@ export const TC2Page = () => {
       else if (e.key === '-' || e.key === '_') mapRef.current?.zoomOut()
       else if (e.key === 'r' || e.key === 'R') mapRef.current?.resetView()
       else if (e.key === 'l' || e.key === 'L') setLegendOpen((open) => !open)
-      else if (e.key === '/') {
+      else if (/^[1-9]$/.test(e.key)) {
+        const c = queueRef.current.queue[Number(e.key) - 1]
+        if (c) queueRef.current.locate(c)
+      } else if (e.key === '/') {
         e.preventDefault()
         setQueryOpen(true)
       }
@@ -147,9 +183,7 @@ export const TC2Page = () => {
           ref={mapRef}
           graph={graph.data}
           selection={selection}
-          onSelectNode={(nid) =>
-            setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid))
-          }
+          onSelectNode={selectNode}
           graphName={graphName}
           change={change}
           fitRequest={fitRequest}
@@ -189,7 +223,7 @@ export const TC2Page = () => {
             onZoomIn={() => mapRef.current?.zoomIn()}
             onZoomOut={() => mapRef.current?.zoomOut()}
             onReset={() => mapRef.current?.resetView()}
-            onClear={() => setSelection(null)}
+            onClear={() => selectNode(null)}
             hasSelection={selection !== null}
           />
           <div className="bg-grey-900/90 text-content-fourth rounded px-2 py-1 text-[11px]">
@@ -197,6 +231,18 @@ export const TC2Page = () => {
           </div>
         </div>
       </div>
+
+      <aside className="border-grey-700 bg-grey-900 text-content-primary flex h-full w-[400px] shrink-0 flex-col border-l">
+        <div className="border-grey-700 flex items-center justify-between border-b px-4 py-2 text-xs">
+          <span className="text-content-fourth">Scenario time</span>
+          <span className="font-mono text-sm font-semibold">{formatClock(now)}</span>
+        </div>
+        {scenario.isError ? (
+          <div className="p-4 text-sm text-[#fca5a5]">Could not load the scenario.</div>
+        ) : (
+          <CasualtyQueue queue={queue} now={now} selectedNid={focusNid} onLocate={locateCasualty} />
+        )}
+      </aside>
     </div>
   )
 }
