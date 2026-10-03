@@ -35,6 +35,8 @@ export type Vehicle = {
   /** set while a reserve vehicle is on its way: when and at which medical point it arrives */
   arrivesAt: Date | null
   arrivePoint: string
+  /** why the reserve vehicle was asked for, e.g. "UGV-2 is out of service" */
+  requestReason: string
   junction: number | null
 }
 
@@ -71,7 +73,7 @@ const CASUALTIES =
   'c.mist_signs, c.mist_treatment, c.stranded_by'
 const VEHICLES =
   'MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN v, v.id, v.type, v.status, ' +
-  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh, v.damage, v.base, v.arrives_at, v.arrive_point'
+  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh, v.damage, v.base, v.arrives_at, v.arrive_point, v.request_reason'
 const FACILITIES =
   'MATCH (m:MedicalPoint) OPTIONAL MATCH (m)-[:NEAR]->(j) RETURN m, m.id, m.name, m.type, ' +
   'm.state, m.free_beds, m.medics_available, m.capabilities, j, m.equipment'
@@ -121,6 +123,7 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       base: str(r[12]),
       arrivesAt: r[13] ? new Date(String(r[13])) : null,
       arrivePoint: str(r[14]),
+      requestReason: str(r[15]),
     })),
     facilities: rowsOf(f).map((r) => ({
       nid: Number(r[0]),

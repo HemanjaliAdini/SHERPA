@@ -29,6 +29,9 @@ from routing import (RELAY_TYPES, Road, cypher_time, dispatch_pass, edge_minutes
 
 TICK = timedelta(minutes=1)
 RESERVE_TRANSPORT_KMH = 60.0  # a requested reserve UGV is carried forward by road at this speed
+# Road trip of each requested reserve vehicle: (route points, departure, minutes). Kept in this process only; after
+# a simulator restart a vehicle already on its way stays where it was and still arrives on time.
+RESERVE_TRIPS: dict[str, tuple[list[tuple[float, float]], datetime, float]] = {}
 PAUSED_POLL_S = 0.5
 
 
@@ -178,13 +181,19 @@ def move_missions(client: TuringDB) -> None:
 
 
 def reinforce(client: TuringDB, now: datetime) -> None:
-    """Far reserve UGVs. A requested one becomes idle at its handover point once its arrival time has come.
-    A new one is requested when a casualty is still waiting at the front after dispatch and no UGV is idle or
-    already on its way: nearer UGVs are dispatched like any vehicle, only the far reserve has to be asked for."""
+    """Reserve UGVs held behind the front. A requested one becomes idle at its handover point once its arrival
+    time has come. One is requested, if none is already on its way, when a UGV is out of service (`disabled`: it is
+    replaced even while other UGVs are free), or when a casualty is still waiting at the front after dispatch and
+    no UGV is idle. Nearer UGVs are dispatched like any vehicle; only the reserve has to be asked for."""
     for v in rows(client, "MATCH (v:Vehicle) WHERE v.status = 'requested' "
                           "RETURN v.id AS id, v.arrives_at AS at, v.arrive_point AS point"):
         if v["at"].to_pydatetime() > now:
+            if v["id"] in RESERVE_TRIPS:  # on the road: the map shows it coming
+                points, departed, minutes = RESERVE_TRIPS[v["id"]]
+                lat, lon = along(points, min((now - departed).total_seconds() / 60 / minutes, 1.0))
+                client.query(f"MATCH (v:Vehicle {{id: {lit(v['id'])}}}) SET v.lat = {lat}, v.lon = {lon}")
             continue
+        RESERVE_TRIPS.pop(v["id"], None)
         p = rows(client, f"MATCH (p:MedicalPoint {{id: {lit(v['point'])}}})-[:NEAR]->(j) "
                          "RETURN p.lat AS lat, p.lon AS lon, id(j) AS j")[0]
         client.query(f"MATCH (v:Vehicle {{id: {lit(v['id'])}}}) SET v.status = 'idle'")
@@ -193,26 +202,34 @@ def reinforce(client: TuringDB, now: datetime) -> None:
     relayed = {r["id"] for r in rows(client, "MATCH (c:Casualty)-[:HELD_AT]->(:MedicalPoint) RETURN c.id AS id")}
     waiting = [c for c in rows(client, "MATCH (c:Casualty) WHERE c.status = 'awaiting_pickup' "
                                        "RETURN c.id AS id, c.lat AS lat, c.lon AS lon") if c["id"] not in relayed]
-    if not waiting:
-        return
     ugvs = rows(client, "MATCH (v:Vehicle)-[:NEAR]->(j) WHERE v.type = 'ugv' "
-                        "RETURN v.id AS id, v.status AS status, id(j) AS j ORDER BY id")
-    if any(v["status"] in ("idle", "requested") for v in ugvs):
+                        "RETURN v.id AS id, v.status AS status, v.lat AS lat, v.lon AS lon, id(j) AS j ORDER BY id")
+    if any(v["status"] == "requested" for v in ugvs):
+        return
+    down = [v for v in ugvs if v["status"] == "disabled"]
+    if down:
+        near, reason = down[0], f"{down[0]['id']} is out of service"
+    elif waiting and not any(v["status"] == "idle" for v in ugvs):
+        near, reason = waiting[0], f"No UGV free for {waiting[0]['id']}"
+    else:
         return
     reserve = next((v for v in ugvs if v["status"] == "reserve"), None)
     handovers = rows(client, "MATCH (p:MedicalPoint)-[:NEAR]->(j) WHERE p.type = 'handover' "
                              "RETURN p.id AS id, p.lat AS lat, p.lon AS lon, id(j) AS j")
     if reserve is None or not handovers:
         return
-    c = waiting[0]
-    point = min(handovers, key=lambda p: haversine_m((c["lat"], c["lon"]), (p["lat"], p["lon"])))
+    point = min(handovers, key=lambda p: haversine_m((near["lat"], near["lon"]), (p["lat"], p["lon"])))
     trip = route(load_roads(client), int(reserve["j"]), int(point["j"]), "ambulance", RESERVE_TRANSPORT_KMH)
     if trip is None:
         return
     arrives = now + timedelta(minutes=round(trip[1]))
+    where = {int(r["j"]): (r["lat"], r["lon"]) for r in rows(
+        client, "MATCH (j:Junction) RETURN id(j) AS j, j.lat AS lat, j.lon AS lon")}
+    RESERVE_TRIPS[reserve["id"]] = ([where[j] for j in trip[0]], now, max(float(round(trip[1])), 1.0))
     client.query(f"MATCH (v:Vehicle {{id: {lit(reserve['id'])}}}) SET v.status = 'requested', "
-                 f"v.arrives_at = {cypher_time(arrives)}, v.arrive_point = {lit(point['id'])}")
-    print(f"{c['id']} waiting, no UGV free: {reserve['id']} requested from reserve, at {point['id']} in "
+                 f"v.arrives_at = {cypher_time(arrives)}, v.arrive_point = {lit(point['id'])}, "
+                 f"v.request_reason = {lit(reason)}")
+    print(f"{reason}: {reserve['id']} requested from reserve, at {point['id']} in "
           f"{trip[1]:.0f} min ({trip[2]:.1f} km)", flush=True)
 
 
@@ -255,6 +272,7 @@ def reset_writes(client: TuringDB) -> None:
     from seed_scenario import (CASUALTIES, MEDICAL_POINTS, SCENARIO_START, VEHICLE_DAMAGE, VEHICLE_RESERVE, VEHICLES,
                                snap)
 
+    RESERVE_TRIPS.clear()
     client.query("MATCH (m:Mission) DETACH DELETE m")
     reset_events(client)
     client.query("MATCH (c:Casualty)-[h:HELD_AT]->() DELETE h")
@@ -266,7 +284,7 @@ def reset_writes(client: TuringDB) -> None:
         client.query(f"MATCH (v:Vehicle {{id: {lit(vid)}}}) "
                      f"SET v.status = {lit('reserve' if vid in VEHICLE_RESERVE else 'idle')}, "
                      f"v.battery_pct = {battery}, v.speed_kmh = {speed}, "
-                     f"v.damage = {lit(VEHICLE_DAMAGE.get(vid, 'none'))} REMOVE v.arrives_at, v.arrive_point")
+                     f"v.damage = {lit(VEHICLE_DAMAGE.get(vid, 'none'))} REMOVE v.arrives_at, v.arrive_point, v.request_reason")
         if where.get(vid) != (lat, lon):
             move_near(client, "Vehicle", vid, snap(client, lat, lon)[0], lat, lon)
     for cid, lat, lon, *_ in CASUALTIES:

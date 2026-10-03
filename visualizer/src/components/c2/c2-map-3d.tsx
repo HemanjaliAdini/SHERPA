@@ -385,6 +385,16 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     return { junctions, entities, roads, links, anchors, routes }
   }, [graph])
 
+  // deck.gl matches markers by their place in the list, so when an entity appears or disappears (a casualty
+  // picked up, a new one reported) every later marker would slide from its neighbour's position to its own.
+  // Slide only while the list holds the same entities; when it changes, markers jump straight to their place.
+  const entityIds = data?.entities.map((n) => n.nid).join(',')
+  const lastEntityIds = useRef(entityIds)
+  const slide = lastEntityIds.current === entityIds ? { getPosition: 900 } : undefined
+  useEffect(() => {
+    lastEntityIds.current = entityIds
+  }, [entityIds])
+
   const places = useMemo<Place[]>(
     () =>
       (basemap?.places.features ?? []).flatMap((f) => {
@@ -596,7 +606,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       new ScatterplotLayer<GraphNode>({
         id: layerId('entities'),
         // vehicles and casualties in transit slide to their new position between ticks
-        transitions: { getPosition: 900 },
+        transitions: slide,
         data: data.entities,
         pickable: true,
         radiusUnits: 'pixels',
@@ -660,7 +670,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       new TextLayer<GraphNode>({
         id: layerId('entity-labels'),
         // vehicles and casualties in transit slide to their new position between ticks
-        transitions: { getPosition: 900 },
+        transitions: slide,
         data: data.entities,
         getPosition: ground,
         getText: (n) => n.tag,

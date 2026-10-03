@@ -254,7 +254,7 @@ export const TC2Page = () => {
       if (before !== undefined && before !== v.status) {
         if (v.status === 'requested')
           lines.push(
-            `No UGV free: ${pointName(v.base)} is sending ${v.id}, arriving ${formatClock(v.arrivesAt)} at ${pointName(v.arrivePoint)}`
+            `${v.requestReason || 'Reserve called'}: ${pointName(v.base)} is sending ${v.id}, arriving ${formatClock(v.arrivesAt)} at ${pointName(v.arrivePoint)}`
           )
         else if (before === 'requested' && v.status !== 'reserve')
           lines.push(`${v.id} from ${pointName(v.base)} has arrived at ${pointName(v.arrivePoint)}`)

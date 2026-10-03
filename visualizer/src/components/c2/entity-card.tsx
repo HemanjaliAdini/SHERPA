@@ -83,6 +83,9 @@ function VehicleRows({
     <>
       {home && <Row label="Belongs to">{home.name}</Row>}
       {vehicle.status === 'reserve' && <Row label="Reserve">held back until no UGV is free</Row>}
+      {vehicle.status === 'requested' && vehicle.requestReason && (
+        <Row label="Called because">{vehicle.requestReason}</Row>
+      )}
       {vehicle.status === 'requested' && (
         <Row label="Requested, arrives">
           {formatClock(vehicle.arrivesAt)} at{' '}

@@ -91,11 +91,13 @@ the point's medic team says so on the casualty's radio.
 
 - **Near, automatic:** UGV-1 and UGV-2 wait at HP-1 and UGV-3 at the forward post R1-C ("Role 1 forward", on the
   CCP-C to HP-1 road). The dispatcher uses them like any vehicle.
-- **Far, requested:** UGV-4 is held in reserve at R2B-1 (`status = 'reserve'`, ignored by the dispatcher). When a
-  casualty at the front is still waiting after dispatch and no UGV is idle or already requested, the simulator asks
-  for it (`reinforce` in `scripts/simulate.py`): `status = 'requested'` with `arrives_at` and `arrive_point`. It is
-  carried by road at 60 km/h, becomes idle at the handover point nearest that casualty, and is then dispatched
-  normally. It is not drawn on the road while it travels.
+- **Reserve, requested:** UGV-4 is held in reserve at R2B-1 (`status = 'reserve'`, ignored by the dispatcher). The
+  simulator asks for it (`reinforce` in `scripts/simulate.py`) when a UGV is out of service (`disabled`, by an event
+  or by Mark as lost), even while other UGVs are free, or when a casualty at the front is still waiting after
+  dispatch and no UGV is idle. It gets `status = 'requested'` with `arrives_at`, `arrive_point` and
+  `request_reason`, is carried by road at 60 km/h, becomes idle at the nearest handover point, and is then
+  dispatched normally. The map shows it driving the route while it travels. There is one reserve UGV, so one
+  request.
 - **Losing a vehicle:** an idle vehicle's info box has **Mark as lost** (`status = 'disabled'`, `damage = 'heavy'`,
   `disabled_by = 'operator'`, the same state as a vehicle stopped by an event); the dispatcher no longer uses it. Reset brings it back.
 
