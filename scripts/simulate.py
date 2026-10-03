@@ -23,9 +23,11 @@ from turingdb.exceptions import TuringDBException
 
 from build_roads import haversine_m
 from cypher import lit, props
-from routing import RELAY_TYPES, Road, cypher_time, dispatch_pass, edge_minutes, read_clock, rows
+from routing import (RELAY_TYPES, Road, cypher_time, dispatch_pass, edge_minutes, load_roads, read_clock, route,
+                     rows)
 
 TICK = timedelta(minutes=1)
+RESERVE_TRANSPORT_KMH = 60.0  # a requested reserve UGV is carried forward by road at this speed
 PAUSED_POLL_S = 0.5
 
 
@@ -173,10 +175,50 @@ def move_missions(client: TuringDB) -> None:
             finish(client, m["id"], m["vid"])
 
 
+def reinforce(client: TuringDB, now: datetime) -> None:
+    """Far reserve UGVs. A requested one becomes idle at its handover point once its arrival time has come.
+    A new one is requested when a casualty is still waiting at the front after dispatch and no UGV is idle or
+    already on its way: nearer UGVs are dispatched like any vehicle, only the far reserve has to be asked for."""
+    for v in rows(client, "MATCH (v:Vehicle) WHERE v.status = 'requested' "
+                          "RETURN v.id AS id, v.arrives_at AS at, v.arrive_point AS point"):
+        if v["at"].to_pydatetime() > now:
+            continue
+        p = rows(client, f"MATCH (p:MedicalPoint {{id: {lit(v['point'])}}})-[:NEAR]->(j) "
+                         "RETURN p.lat AS lat, p.lon AS lon, id(j) AS j")[0]
+        client.query(f"MATCH (v:Vehicle {{id: {lit(v['id'])}}}) SET v.status = 'idle'")
+        move_near(client, "Vehicle", v["id"], int(p["j"]), p["lat"] + 0.0002, p["lon"])
+        print(f"{v['id']} arrived at {v['point']} from reserve", flush=True)
+    relayed = {r["id"] for r in rows(client, "MATCH (c:Casualty)-[:HELD_AT]->(:MedicalPoint) RETURN c.id AS id")}
+    waiting = [c for c in rows(client, "MATCH (c:Casualty) WHERE c.status = 'awaiting_pickup' "
+                                       "RETURN c.id AS id, c.lat AS lat, c.lon AS lon") if c["id"] not in relayed]
+    if not waiting:
+        return
+    ugvs = rows(client, "MATCH (v:Vehicle)-[:NEAR]->(j) WHERE v.type = 'ugv' "
+                        "RETURN v.id AS id, v.status AS status, id(j) AS j ORDER BY id")
+    if any(v["status"] in ("idle", "requested") for v in ugvs):
+        return
+    reserve = next((v for v in ugvs if v["status"] == "reserve"), None)
+    handovers = rows(client, "MATCH (p:MedicalPoint)-[:NEAR]->(j) WHERE p.type = 'handover' "
+                             "RETURN p.id AS id, p.lat AS lat, p.lon AS lon, id(j) AS j")
+    if reserve is None or not handovers:
+        return
+    c = waiting[0]
+    point = min(handovers, key=lambda p: haversine_m((c["lat"], c["lon"]), (p["lat"], p["lon"])))
+    trip = route(load_roads(client), int(reserve["j"]), int(point["j"]), "ambulance", RESERVE_TRANSPORT_KMH)
+    if trip is None:
+        return
+    arrives = now + timedelta(minutes=round(trip[1]))
+    client.query(f"MATCH (v:Vehicle {{id: {lit(reserve['id'])}}}) SET v.status = 'requested', "
+                 f"v.arrives_at = {cypher_time(arrives)}, v.arrive_point = {lit(point['id'])}")
+    print(f"{c['id']} waiting, no UGV free: {reserve['id']} requested from reserve, at {point['id']} in "
+          f"{trip[1]:.0f} min ({trip[2]:.1f} km)", flush=True)
+
+
 def tick_writes(client: TuringDB) -> datetime:
     """One scenario minute, written inside the caller's change. Returns the new scenario time."""
     now = read_clock(client)
     dispatch_pass(client, now)
+    reinforce(client, now)
     move_missions(client)
     client.query(f"MATCH (k:Clock) SET k.now = {cypher_time(now + TICK)}")
     return now + TICK
@@ -201,7 +243,8 @@ def in_change(client: TuringDB, work) -> None:
 
 def reset_writes(client: TuringDB) -> None:
     """Back to the seed: no missions, everyone at their start, beds and clock as seeded, paused."""
-    from seed_scenario import CASUALTIES, MEDICAL_POINTS, SCENARIO_START, VEHICLES, snap
+    from seed_scenario import (CASUALTIES, MEDICAL_POINTS, SCENARIO_START, VEHICLE_DAMAGE, VEHICLE_RESERVE, VEHICLES,
+                               snap)
 
     client.query("MATCH (m:Mission) DETACH DELETE m")
     client.query("MATCH (c:Casualty)-[h:HELD_AT]->() DELETE h")
@@ -210,8 +253,10 @@ def reset_writes(client: TuringDB) -> None:
     where = {r["id"]: (r["lat"], r["lon"]) for r in rows(
         client, "MATCH (n) WHERE n:Vehicle OR n:Casualty RETURN n.id AS id, n.lat AS lat, n.lon AS lon")}
     for vid, _, lat, lon, *_, battery, _, speed in VEHICLES:
-        client.query(f"MATCH (v:Vehicle {{id: {lit(vid)}}}) SET v.status = 'idle', v.battery_pct = {battery}, "
-                     f"v.speed_kmh = {speed}")
+        client.query(f"MATCH (v:Vehicle {{id: {lit(vid)}}}) "
+                     f"SET v.status = {lit('reserve' if vid in VEHICLE_RESERVE else 'idle')}, "
+                     f"v.battery_pct = {battery}, v.speed_kmh = {speed}, "
+                     f"v.damage = {lit(VEHICLE_DAMAGE.get(vid, 'none'))} REMOVE v.arrives_at, v.arrive_point")
         if where.get(vid) != (lat, lon):
             move_near(client, "Vehicle", vid, snap(client, lat, lon)[0], lat, lon)
     for cid, lat, lon, *_ in CASUALTIES:

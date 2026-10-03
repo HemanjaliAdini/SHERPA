@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 import { FACILITY_LABEL } from './colors'
 import type { GeoGraph, GraphNode } from './graph-data'
-import { type Facility, type Scenario, formatWait } from './scenario-data'
+import { type Facility, type Scenario, formatClock, formatWait } from './scenario-data'
 
 export const ENTITY_CARD_LABELS = new Set(['Vehicle', 'MedicalPoint', 'Medic', 'Command'])
 
@@ -14,6 +14,8 @@ type Props = {
   scenario: Scenario
   now: Date
   onClose: () => void
+  /** take an idle vehicle out of service (destroyed or broken down) */
+  onMarkLost?: (nid: number) => void
 }
 
 const words = (s: string) => s.replaceAll('_', ' ')
@@ -63,7 +65,12 @@ const isAt = (graph: GeoGraph, vehicleNid: number, facilityNid: number) => {
   return v !== undefined && f !== undefined && metresBetween(v, f) <= AT_POINT_METRES
 }
 
-function VehicleRows({ node, graph, scenario }: Pick<Props, 'node' | 'graph' | 'scenario'>) {
+function VehicleRows({
+  node,
+  graph,
+  scenario,
+  onMarkLost,
+}: Pick<Props, 'node' | 'graph' | 'scenario' | 'onMarkLost'>) {
   const vehicle = scenario.vehicles.find((v) => v.nid === node.nid)
   if (!vehicle) return null
   const missions = (scenario.assignments ?? []).filter((m) => m.vehicleId === vehicle.id)
@@ -71,8 +78,23 @@ function VehicleRows({ node, graph, scenario }: Pick<Props, 'node' | 'graph' | '
   const toCollect = missions.filter((m) => m.casualtyStatus === 'assigned').map((m) => m.casualtyId)
   const capacity = vehicle.litterCapacity + vehicle.ambulatoryCapacity
   const base = scenario.facilities.find((f) => isAt(graph, vehicle.nid, f.nid))
+  const home = scenario.facilities.find((f) => f.id === vehicle.base)
   return (
     <>
+      {home && <Row label="Belongs to">{home.name}</Row>}
+      {vehicle.status === 'reserve' && <Row label="Reserve">held back until no UGV is free</Row>}
+      {vehicle.status === 'requested' && (
+        <Row label="Requested, arrives">
+          {formatClock(vehicle.arrivesAt)} at{' '}
+          {scenario.facilities.find((f) => f.id === vehicle.arrivePoint)?.name ??
+            vehicle.arrivePoint}
+        </Row>
+      )}
+      {vehicle.status === 'lost' && (
+        <Row label="Out of service">
+          <span className="text-red-400">lost</span>
+        </Row>
+      )}
       <Row label="Casualties aboard">
         {aboard.length} of {capacity}
         {aboard.length > 0 && <span className="text-slate-400"> ({aboard.join(', ')})</span>}
@@ -82,7 +104,7 @@ function VehicleRows({ node, graph, scenario }: Pick<Props, 'node' | 'graph' | '
       </Row>
       {toCollect.length > 0 && <Row label="Going to collect">{toCollect.join(', ')}</Row>}
       {missions[0] && <Row label="Delivering to">{missions[0].destinationId}</Row>}
-      {missions.length === 0 && base && <Row label="Waiting at">{base.name}</Row>}
+      {vehicle.status === 'idle' && base && <Row label="Waiting at">{base.name}</Row>}
       {/* battery_pct is the energy level for both types: fuel for an ambulance, battery for a UGV */}
       <Row label={vehicle.type === 'ambulance' ? 'Fuel' : 'Battery'}>
         {Math.round(vehicle.batteryPct)}%<Bar pct={vehicle.batteryPct} />
@@ -97,6 +119,16 @@ function VehicleRows({ node, graph, scenario }: Pick<Props, 'node' | 'graph' | '
         </span>
       </Row>
       <Row label="Highest threat it will drive through">{vehicle.maxThreat}</Row>
+      {onMarkLost && vehicle.status === 'idle' && (
+        <button
+          type="button"
+          onClick={() => onMarkLost(vehicle.nid)}
+          title="Take this vehicle out of service, as if destroyed or broken down. Reset brings it back."
+          className="mt-2 w-full rounded border border-red-500/60 px-2 py-1 text-xs font-medium text-red-300 hover:bg-red-950/60"
+        >
+          Mark as lost
+        </button>
+      )}
     </>
   )
 }
@@ -112,6 +144,18 @@ function FacilityRows({
   const vehicles = scenario.vehicles.filter(
     (v) => v.status === 'idle' && isAt(graph, v.nid, facility.nid)
   )
+  const reserve = scenario.vehicles
+    .filter((v) => v.base === facility.id && v.status === 'reserve')
+    .map((v) => v.id)
+  // This point's own vehicles that are out on a mission, with who they are collecting or carrying
+  const sentOut = scenario.vehicles
+    .filter((v) => v.base === facility.id && (v.status === 'tasked' || v.status === 'requested'))
+    .map((v) => {
+      const mission = (scenario.assignments ?? []).find((m) => m.vehicleId === v.id)
+      if (v.status === 'requested')
+        return `${v.id} \u2192 ${v.arrivePoint} (${formatClock(v.arrivesAt)})`
+      return mission ? `${v.id} \u2192 ${mission.casualtyId}` : v.id
+    })
   return (
     <>
       <Row label="State">{words(facility.state) || 'unknown'}</Row>
@@ -128,6 +172,8 @@ function FacilityRows({
       <Row label="Capabilities">{list(facility.capabilities.map(words))}</Row>
       <Row label="Equipment">{list(facility.equipment.map(words))}</Row>
       <Row label="Vehicles waiting here">{list(vehicles.map((v) => v.id))}</Row>
+      <Row label="Own vehicles sent out">{list(sentOut)}</Row>
+      {reserve.length > 0 && <Row label="In reserve">{reserve.join(', ')}</Row>}
     </>
   )
 }
@@ -181,7 +227,7 @@ function CommandRows({ node, scenario }: Pick<Props, 'node' | 'scenario'>) {
   )
 }
 
-export function EntityCard({ node, graph, scenario, now, onClose }: Props) {
+export function EntityCard({ node, graph, scenario, now, onClose, onMarkLost }: Props) {
   const facility =
     node.label === 'MedicalPoint' ? scenario.facilities.find((f) => f.nid === node.nid) : undefined
   const subtitle =
@@ -212,7 +258,9 @@ export function EntityCard({ node, graph, scenario, now, onClose }: Props) {
         </button>
       </header>
       <dl className="min-h-0 overflow-y-auto px-3 py-2 text-xs">
-        {node.label === 'Vehicle' && <VehicleRows node={node} graph={graph} scenario={scenario} />}
+        {node.label === 'Vehicle' && (
+          <VehicleRows node={node} graph={graph} scenario={scenario} onMarkLost={onMarkLost} />
+        )}
         {facility && <FacilityRows facility={facility} graph={graph} scenario={scenario} />}
         {node.label === 'Medic' && (
           <MedicRows node={node} graph={graph} scenario={scenario} now={now} />

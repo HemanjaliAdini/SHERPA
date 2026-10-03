@@ -144,7 +144,7 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
                 medics_total})                                                     🔜
 
 (:Vehicle {id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km,     ✅
-           battery_pct, max_threat, speed_kmh, status})
+           battery_pct, max_threat, speed_kmh, status, damage, base})
 
 (:Casualty {id, lat, lon, time_of_injury, status, triage_category, mobility,       ✅
             mist_mechanism, mist_injuries, mist_signs, mist_treatment,
@@ -200,7 +200,8 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
   - `status` is `open` or `closed`.
   - `geometry` is the text `"lat,lon;lat,lon;..."`.
 - **`Vehicle.speed_kmh`:** the vehicle's own current speed (it drops with low battery, for example). `type` is `ugv`
-  or `ambulance`. `status` is `idle` or `tasked`.
+  or `ambulance`. `status` is `idle` or `tasked`; also `reserve`, `requested` (a reserve
+  vehicle on its way, with `arrives_at` and `arrive_point`) and `lost`, see "Vehicle bases" in the README.
 - **`Casualty.status`:** `reported` (untriaged) → `awaiting_pickup` → `assigned` → `in_transit` → `delivered`, or back
   to `awaiting_pickup` when dropped at a handover or collection point; `dead` when triaged `DEAD`. Triage labels
   depend on 7.2.

@@ -28,6 +28,11 @@ export type Vehicle = {
   speedKmh: number | null
   /** none, light or heavy; empty when the graph does not record it */
   damage: string
+  /** id of the medical point the vehicle belongs to; empty when the graph does not record it */
+  base: string
+  /** set while a reserve vehicle is on its way: when and at which medical point it arrives */
+  arrivesAt: Date | null
+  arrivePoint: string
   junction: number | null
 }
 
@@ -64,7 +69,7 @@ const CASUALTIES =
   'c.mist_signs, c.mist_treatment'
 const VEHICLES =
   'MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN v, v.id, v.type, v.status, ' +
-  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh, v.damage'
+  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh, v.damage, v.base, v.arrives_at, v.arrive_point'
 const FACILITIES =
   'MATCH (m:MedicalPoint) OPTIONAL MATCH (m)-[:NEAR]->(j) RETURN m, m.id, m.name, m.type, ' +
   'm.state, m.free_beds, m.medics_available, m.capabilities, j, m.equipment'
@@ -110,6 +115,9 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       junction: nodeId(r[9]),
       speedKmh: r[10] === null || r[10] === undefined ? null : Number(r[10]),
       damage: str(r[11]),
+      base: str(r[12]),
+      arrivesAt: r[13] ? new Date(String(r[13])) : null,
+      arrivePoint: str(r[14]),
     })),
     facilities: rowsOf(f).map((r) => ({
       nid: Number(r[0]),

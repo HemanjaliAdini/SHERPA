@@ -76,6 +76,22 @@ medics available, capabilities, equipment and vehicles waiting there. A medic te
 command shows the scenario totals. `Vehicle.damage` and `MedicalPoint.equipment` are placeholder seed values in
 `scripts/seed_scenario.py`; the simulator does not change them.
 
+### Vehicle bases, the forward post and the reserve UGV
+
+Every vehicle has a home point (`Vehicle.base`, the medical point it starts at). When a mission is dispatched, a
+banner in the sidebar says which point sent which vehicle, the point's info box lists "Own vehicles sent out", and
+the point's medic team says so on the casualty's radio.
+
+- **Near, automatic:** UGV-1 and UGV-2 wait at HP-1 and UGV-3 at the forward post R1-C ("Role 1 forward", on the
+  CCP-C to HP-1 road). The dispatcher uses them like any vehicle.
+- **Far, requested:** UGV-4 is held in reserve at R2B-1 (`status = 'reserve'`, ignored by the dispatcher). When a
+  casualty at the front is still waiting after dispatch and no UGV is idle or already requested, the simulator asks
+  for it (`reinforce` in `scripts/simulate.py`): `status = 'requested'` with `arrives_at` and `arrive_point`. It is
+  carried by road at 60 km/h, becomes idle at the handover point nearest that casualty, and is then dispatched
+  normally. It is not drawn on the road while it travels.
+- **Losing a vehicle:** an idle vehicle's info box has **Mark as lost** (`status = 'lost'`, `damage = 'heavy'`); the
+  dispatcher no longer uses it. Reset brings it back.
+
 ## Tests
 
 ```bash

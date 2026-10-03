@@ -62,3 +62,7 @@ export const setTriage = (
     `MATCH (c:Casualty) WHERE c = ${nid} SET c.triage_category = '${category}', ` +
       `c.mobility = '${mobility}', c.status = '${category === 'DEAD' ? 'dead' : 'awaiting_pickup'}'`
   )
+
+/** A vehicle destroyed or broken down: the dispatcher no longer uses it. Only offered for an idle vehicle. */
+export const markVehicleLost = (graph: string, nid: number) =>
+  writeChange(graph, `MATCH (v:Vehicle) WHERE v = ${nid} SET v.status = 'lost', v.damage = 'heavy'`)

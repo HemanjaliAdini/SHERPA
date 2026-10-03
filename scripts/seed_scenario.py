@@ -43,21 +43,29 @@ MEDICAL_POINTS = [
     ("HP-2", "Handover point 2", "handover", 47.5025, 35.8551, 1, 0),
     ("R1-A", "Role 1 Orikhiv", "role1", 47.560, 35.790, 3, 4),
     ("R1-B", "Role 1 alternate", "role1", 47.575, 35.760, 2, 6),
+    # Forward aid post on the CCP-C to HP-1 road; UGV-3 is based here, so the sector has a third UGV
+    ("R1-C", "Role 1 forward", "role1", 47.4699, 35.8182, 2, 4),
     ("R2B-1", "Role 2 Basic", "role2_basic", 47.6376, 35.6614, 5, 8),
     ("R3-1", "Role 3 Zaporizhzhia", "role3", 47.820, 35.180, 12, 20),
 ]
 # id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km, battery_pct, max_threat, speed_kmh
-# UGVs wait at HP-1 and ambulances at R1-A, offset ~20 m so the markers do not overlap.
+# UGVs wait at HP-1 (UGV-3 at R1-C) and ambulances at R1-A, offset ~20 m so the markers do not overlap.
 # speed_kmh is the vehicle's own current speed; a road's cap for the vehicle type can lower it (routing.py)
 VEHICLES = [
     ("UGV-1", "ugv", 47.5052, 35.8132, 1, 0, 25.0, 90.0, 0.8, 20.0),
     ("UGV-2", "ugv", 47.5048, 35.8132, 1, 0, 25.0, 75.0, 0.8, 15.0),
+    ("UGV-3", "ugv", 47.4701, 35.8182, 1, 0, 25.0, 90.0, 0.8, 20.0),
+    ("UGV-4", "ugv", 47.6378, 35.6614, 1, 0, 25.0, 100.0, 0.8, 20.0),
     ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
     ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
 # Vehicle.damage is none, light or heavy; vehicles not listed here start undamaged.
 # UGV-2 starts lightly damaged, which is why its speed and battery above are lower than UGV-1's.
 VEHICLE_DAMAGE = {"UGV-2": "light"}
+# Vehicles held in reserve behind the front, at R2B-1 (status reserve): the dispatcher ignores them. When a casualty is
+# left waiting and no UGV is free, the simulator requests one and it arrives at a handover point after the road
+# travel time (simulate.reinforce). Nearer UGVs (HP-1, R1-C) are simply dispatched; only the far one is asked for.
+VEHICLE_RESERVE = {"UGV-4"}
 # id, lat, lon, time_of_injury, then the MIST report the medic triages from: mechanism, injuries, signs, treatment.
 # Casualties arrive untriaged (status reported); the medic sets triage_category and mobility on the C2 screen.
 # ponytail: placeholder clinical texts, to be replaced by Noo / the triage parser. All behind the front line (47.436)
@@ -76,6 +84,11 @@ CASUALTIES = [
 SCENARIO_START = "2023-09-12T05:30:00Z"  # Clock.now at seed and after a reset
 # id, type, level, active, lat, lon: on the main road between HP-1 and R1-A; starts inactive
 THREAT = ("THR-1", "fpv_drone", 0.7, False, 47.530, 35.800)
+
+
+def home_base(lat: float, lon: float) -> str:
+    """Id of the medical point a vehicle starts at (the nearest one): its Vehicle.base, shown on the C2 screen."""
+    return min(MEDICAL_POINTS, key=lambda p: haversine_m((lat, lon), (p[3], p[4])))[0]
 
 
 def var(entity_id: str) -> str:
@@ -107,8 +120,9 @@ def create_statement() -> str:
         parts.append(
             f"({var(eid)}:Vehicle "
             + props(id=lit(eid), type=lit(typ), lat=lat, lon=lon, litter_capacity=litter, ambulatory_capacity=amb,
-                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"),
-                    damage=lit(VEHICLE_DAMAGE.get(eid, "none")))
+                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed,
+                    status=lit("reserve" if eid in VEHICLE_RESERVE else "idle"),
+                    damage=lit(VEHICLE_DAMAGE.get(eid, "none")), base=lit(home_base(lat, lon)))
             + ")"
         )
     for eid, lat, lon, toi, mechanism, injuries, signs, treatment in CASUALTIES:

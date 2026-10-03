@@ -137,7 +137,8 @@ def test_batch_dispatched_on_first_tick(scratch):
     by_casualty = missions(scratch)
     first_two = sorted((m["mid"], cid) for cid, m in by_casualty.items())[:2]
     assert {cid for _, cid in first_two} == {"CAS-1", "CAS-3"}  # the T1s get the first missions
-    assert len(by_casualty) == len(VEHICLES)  # every vehicle used, one casualty left waiting
+    # every vehicle in the test graph used, one casualty left waiting (the seed list may hold more vehicles)
+    assert len(by_casualty) == one(scratch, "MATCH (v:Vehicle) RETURN count(v) AS n")["n"]
     assert {m["status"] for m in by_casualty.values()} == {"active"}  # on their way, not finished
 
 

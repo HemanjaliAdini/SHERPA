@@ -58,6 +58,10 @@ export function communicationEvents(graph: GeoGraph, scenario: Scenario): Commun
     const casualty = { id: mission.casualtyId, status: mission.casualtyStatus, lat: mission.casualtyLat, lon: mission.casualtyLon }
       events.push({ key: `dispatch:${mission.id}:${casualty.id}`, speaker: 'CMD-1',
         text: casualty.status === 'in_transit' ? `${vehicle.id}, continue transfer of ${casualty.id} to ${point.id}.` : `${vehicle.id}, collect ${casualty.id}. Transfer to ${point.id}.` })
+      // The vehicle's home point says its vehicle is going out, so the viewer sees where the help comes from
+      const base = scenario.facilities.find((item) => item.id === scenario.vehicles.find((item) => item.id === vehicle.id)?.base)
+      if (base && casualty.status === 'assigned') events.push({ key: `sent:${mission.id}:${casualty.id}`, speaker: `MED-${base.id}`,
+        text: `${base.name} here. Our ${vehicle.id} is sent out to collect ${casualty.id}.` })
       if (casualty.status === 'assigned') events.push({ key: `moving:${mission.id}:${casualty.id}`, speaker: vehicle.id,
         text: `Copy, command. Moving to ${casualty.id}.` })
       if (casualty.status === 'assigned') {

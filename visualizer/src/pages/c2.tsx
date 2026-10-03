@@ -34,6 +34,7 @@ import { type Selection, neighbourhood, selectionFromIds } from '@/components/c2
 import {
   SPEEDS,
   fetchSim,
+  markVehicleLost,
   requestReset,
   setRunning,
   setSpeed,
@@ -204,6 +205,44 @@ export const TC2Page = () => {
   }
   const queue = scenario.data ? activeQueue(scenario.data.casualties) : []
 
+  // Announce each new mission once: which medical point's vehicle is going out, and for whom.
+  // Missions already under way when the page opens are not announced.
+  const announced = useRef<Set<string> | null>(null)
+  const vehicleStatus = useRef(new Map<string, string>())
+  useEffect(() => {
+    if (!scenario.data) return
+    const first = announced.current === null
+    const known = announced.current ?? new Set<string>()
+    const lines: string[] = []
+    for (const mission of scenario.data.assignments ?? []) {
+      const key = `${mission.id}:${mission.casualtyId}`
+      if (known.has(key)) continue
+      known.add(key)
+      const vehicle = scenario.data.vehicles.find((v) => v.id === mission.vehicleId)
+      const base = scenario.data.facilities.find((f) => f.id === vehicle?.base)
+      if (base && mission.casualtyStatus === 'assigned')
+        lines.push(`${base.name} sent ${mission.vehicleId} to collect ${mission.casualtyId}`)
+    }
+    // A far reserve vehicle being asked for, and its arrival
+    const pointName = (id: string) => scenario.data?.facilities.find((f) => f.id === id)?.name ?? id
+    for (const v of scenario.data.vehicles) {
+      const before = vehicleStatus.current.get(v.id)
+      if (before !== undefined && before !== v.status) {
+        if (v.status === 'requested')
+          lines.push(
+            `No UGV free: ${pointName(v.base)} is sending ${v.id}, arriving ${formatClock(v.arrivesAt)} at ${pointName(v.arrivePoint)}`
+          )
+        else if (before === 'requested' && v.status !== 'reserve')
+          lines.push(`${v.id} from ${pointName(v.base)} has arrived at ${pointName(v.arrivePoint)}`)
+        else if (v.status === 'lost') lines.push(`${v.id} is lost and out of service`)
+      }
+      vehicleStatus.current.set(v.id, v.status)
+    }
+    if (!scenario.data.assignments?.length) known.clear()
+    announced.current = known
+    if (!first && lines.length) setNotice(lines.join('\n'))
+  }, [scenario.data])
+
   const selectNode = (nid: number | null) => {
     setFocusNid(nid)
     setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid))
@@ -323,6 +362,9 @@ export const TC2Page = () => {
               scenario={scenario.data}
               now={now}
               onClose={() => selectNode(null)}
+              onMarkLost={
+                sim.data?.resetting ? undefined : (nid) => act(markVehicleLost(graphName, nid))
+              }
             />
           </div>
         )}
@@ -461,7 +503,7 @@ export const TC2Page = () => {
           )}
         </div>
         {notice && (
-          <div className="border-b border-[#166534] bg-[#14532d] px-4 py-2 text-sm font-medium">
+          <div className="border-b border-[#166534] bg-[#14532d] px-4 py-2 text-sm font-medium whitespace-pre-line">
             {notice}
           </div>
         )}
