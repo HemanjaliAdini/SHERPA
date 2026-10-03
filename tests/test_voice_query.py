@@ -1,12 +1,12 @@
-"""Voice questions: ids read from the text, answers on a hand-built world, and intent matching with the real
-embedding model (skipped unless `uv sync --extra voice`). No TuringDB needed."""
+"""Voice questions in English and Ukrainian: ids read from the text, answers on a hand-built world, and intent
+matching with the real embedding model (skipped unless `uv sync --extra voice`). No TuringDB needed."""
 from datetime import datetime, timezone
 
 import pytest
 
 from routing import Road
 from voice_query import (INTENTS, MIN_SCORE, Casualty, Facility, Matcher, Mission, Slots, Vehicle, World, ask,
-                         normalise, read_slots)
+                         language, normalise, read_slots)
 
 
 @pytest.mark.parametrize("text, casualty", [
@@ -39,6 +39,24 @@ def test_reads_the_vehicle(text, vehicle):
 ])
 def test_reads_the_triage_category(text, triage):
     assert read_slots(text).triage == triage
+
+
+@pytest.mark.parametrize("text, casualty, vehicle, triage", [
+    ("який стан пораненого номер три", "CAS-3", None, None),
+    ("що з третім пораненим", "CAS-3", None, None),
+    ("п’ятого пораненого", "CAS-5", None, None),
+    ("у нас три поранених?", None, None, None),  # a count, not an id
+    ("де робот два", None, "UGV-2", None),
+    ("що робить швидка 1", None, "AMB-1", None),
+    ("де другий робот", None, "UGV-2", None),
+    ("яка швидка найближча до пораненого 1", "CAS-1", None, None),  # "швидка" without a number is not an id
+    ("покажи всіх поранених Т1", None, None, "T1"),  # Cyrillic Т
+    ("покажи поранених першої категорії", None, None, "T1"),  # not casualty 1
+    ("невідкладні поранені", None, None, "T1"),
+])
+def test_reads_ukrainian_ids(text, casualty, vehicle, triage):
+    slots = read_slots(text)
+    assert (slots.casualty, slots.vehicle, slots.triage, slots.lang) == (casualty, vehicle, triage, "uk")
 
 
 def test_ids_are_spelled_like_the_examples_before_matching():
@@ -167,23 +185,74 @@ NOT_UNDERSTOOD = [
 ]
 
 
+# Worded differently from the examples in voice_text.py, so they measure understanding, not recall
+UNDERSTOOD_UK = [
+    ("Хто з поранених на карті зараз найкритичніший?", "most_critical"),
+    ("Кого рятувати в першу чергу?", "most_critical"),
+    ("Хто з поранених найважчий?", "most_critical"),
+    ("Покажи чергу на евакуацію", "queue"),
+    ("Перелік усіх поранених", "queue"),
+    ("Скільки поранених зараз?", "triage_count"),
+    ("Скільки в нас T1?", "triage_count"),
+    ("Покажи поранених першої категорії", "by_triage"),
+    ("Хто з поранених має категорію T2?", "by_triage"),
+    ("Хто довше за всіх чекає?", "longest_waiting"),
+    ("Хто вже більше години чекає?", "golden_hour"),
+    ("Хто пропустив золоту годину?", "golden_hour"),
+    ("Що з пораненим номер три?", "casualty_status"),
+    ("Розкажи про другого пораненого", "casualty_status"),
+    ("Коли заберуть третього пораненого?", "casualty_eta"),
+    ("Хто їде до пораненого номер один?", "casualty_eta"),
+    ("Кому ще не призначили транспорт?", "unassigned"),
+    ("Кого треба нести на ношах?", "stretcher"),
+    ("Хто з поранених може йти сам?", "walking"),
+    ("Яка техніка зараз вільна?", "vehicles"),
+    ("Чи є вільні роботи?", "vehicles"),
+    ("Де зараз робот номер два?", "vehicle_status"),
+    ("Чим зайнята перша швидка?", "vehicle_status"),
+    ("Чи є роботи з низьким зарядом?", "battery"),
+    ("Яка техніка найближча до третього пораненого?", "nearest_vehicle"),
+    ("Хто найшвидше доїде до пораненого п'ять?", "nearest_vehicle"),
+    ("Куди відвезти пораненого номер один?", "nearest_facility"),
+    ("В який шпиталь везти другого пораненого?", "nearest_facility"),
+    ("Де є вільні місця для поранених?", "beds"),
+    ("Де роблять операції?", "capability"),
+    ("Де є реанімація?", "capability"),
+    ("Скільки в нас медиків?", "medics"),
+    ("Які евакуації зараз тривають?", "missions"),
+    ("Чи є дрони поблизу?", "threats"),
+    ("Чи небезпечні дороги зараз?", "threats"),
+    ("Чи перекриті якісь дороги?", "closed_roads"),
+    ("Міст зруйновано?", "closed_roads"),
+    ("Доповідай обстановку", "sitrep"),
+    ("Яка ситуація загалом?", "sitrep"),
+    ("Що ти можеш?", "help"),
+]
+NOT_UNDERSTOOD_UK = [
+    "Яка завтра погода?", "Розкажи анекдот", "Увімкни музику", "Котра година?", "Дякую", "Подзвони мамі",
+    "Яка столиця Франції?", "Напиши вірш", "Добрий ранок", "Хто виграв футбол?", "Як накласти джгут?",
+    "Замов ще бинтів", "Ти мене чуєш?", "Відкрий двері", "Як далеко до Лондона?", "Мені подобаються черепахи",
+]
+
+
 @pytest.fixture(scope="module")
 def matcher() -> Matcher:
     st = pytest.importorskip("sentence_transformers")
-    model = st.SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device="cpu")
+    model = st.SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", device="cpu")
     return Matcher(lambda texts: model.encode(texts, normalize_embeddings=True))
 
 
-@pytest.mark.parametrize("question, intent", UNDERSTOOD)
+@pytest.mark.parametrize("question, intent", UNDERSTOOD + UNDERSTOOD_UK)
 def test_understands(matcher, question, intent):
     best, score = matcher.rank(question)[0]
     assert (best.name, score >= MIN_SCORE) == (intent, True)
 
 
-@pytest.mark.parametrize("question", NOT_UNDERSTOOD)
+@pytest.mark.parametrize("question", NOT_UNDERSTOOD + NOT_UNDERSTOOD_UK)
 def test_says_it_does_not_understand(matcher, question):
     result = ask(matcher, question, "unused", world=world())
-    assert not result["understood"] and result["say"] == "Sorry, I didn't understand that."
+    assert not result["understood"]
+    assert result["say"] in ("Sorry, I didn't understand that.", "Вибачте, не вдалося зрозуміти запитання.")
 
 
 def test_asks_which_casualty_when_none_is_named(matcher):
@@ -194,6 +263,32 @@ def test_asks_which_casualty_when_none_is_named(matcher):
 def test_answers_end_to_end(matcher):
     result = ask(matcher, "Which casualty on my map right now is the most critical?", "unused", world=world())
     assert result["understood"] and result["rows"][0][0] == "CAS-2"
+
+
+def test_answers_in_ukrainian_when_asked_in_ukrainian(matcher):
+    result = ask(matcher, "Хто з поранених на карті зараз найкритичніший?", "unused", world=world())
+    assert result["understood"] and result["lang"] == "uk"
+    assert result["say"].startswith("Найкритичніший — CAS-2: T1, ношовий")
+    assert result["columns"][0] == "Поранений" and result["rows"][0][0] == "CAS-2"
+
+
+def test_asks_back_and_suggests_in_ukrainian(matcher):
+    result = ask(matcher, "Розкажи анекдот", "unused", world=world())
+    assert result["say"] == "Вибачте, не вдалося зрозуміти запитання."
+    assert all(language(s) == "uk" for s in result["suggestions"])
+
+
+def test_every_intent_has_ukrainian_examples_and_a_title():
+    from voice_text import UK_EXAMPLES, UK_TITLES
+    assert {i.name for i in INTENTS} == set(UK_EXAMPLES) == set(UK_TITLES)
+
+
+@pytest.mark.parametrize("intent", INTENTS, ids=lambda i: i.name)
+def test_every_answer_has_a_ukrainian_version(intent):
+    """No answer falls back to English or fails on a missing text when asked in Ukrainian."""
+    slots = Slots(casualty="CAS-2", vehicle="AMB-1", triage="T1", capability="surgery", lang="uk")
+    answer = intent.handler(world(), slots)
+    assert language(answer.say) == "uk", answer.say
 
 
 def test_untriaged_casualties_are_named_but_never_ranked():
@@ -225,3 +320,10 @@ def test_delivered_and_dead_casualties_leave_the_queue():
 def test_every_question_has_an_answer_on_an_empty_graph(intent):
     empty = World(NOW, [], [], [], [], [], [])
     assert intent.handler(empty, Slots(casualty="CAS-1", vehicle="UGV-1", triage="T1", capability="surgery")).say
+
+
+@pytest.mark.parametrize("name", ["nearest_vehicle", "nearest_facility"])
+def test_no_vehicle_or_destination_for_a_delivered_casualty(name):
+    w = world()
+    w.casualty("CAS-1").status = "delivered"
+    assert handler(name)(w, Slots(casualty="CAS-1")).say == "CAS-1 is delivered."

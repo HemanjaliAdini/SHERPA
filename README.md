@@ -37,11 +37,12 @@ To refresh the roads from OpenStreetMap (slow; the repo already has `data/osm/ro
 
 ### Voice questions (optional)
 
-A medic asks the C2 page a question out loud ("which casualty on my map right now is the most critical?") and gets
-one sentence and a table back, with the answer lit up on the map. Speech to text is
-[Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3); the question is matched to one of ~24
-known questions with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), and below a
-similarity of 0.5 it says it did not understand instead of guessing. Both run locally on CPU.
+A medic asks the C2 page a question out loud, in English or Ukrainian ("which casualty on my map right now is the
+most critical?", "хто з поранених зараз найкритичніший?"), and gets one sentence and a table back in the same
+language, with the answer lit up on the map. Speech to text is
+[Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3); the question is matched to one of 24
+known questions with [paraphrase-multilingual-MiniLM-L12-v2](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2),
+and below a similarity of 0.6 it says it did not understand instead of guessing. Both run locally on CPU.
 
 ```bash
 uv sync --extra voice                 # torch + NeMo, a few GB; models download on first start (~2.5 GB)
@@ -51,8 +52,9 @@ VOICE=1 ./run.sh                      # or on its own: uv run --extra voice pyth
 It answers about whichever graph the page shows (`?graph=` in its address), old or new scenario model.
 On the C2 page press **M** (or "Ask by voice"), speak, press **M** again; or type the question. Speech recognition
 takes about a minute to load; typed questions work as soon as the server is up. Once the models are downloaded,
-`HF_HUB_OFFLINE=1` keeps it fully offline. Questions and their example phrasings are in `scripts/voice_query.py`;
-add a phrasing there when a medic's wording is not understood, and run `uv run --extra voice pytest`.
+`HF_HUB_OFFLINE=1` keeps it fully offline. Questions and their English phrasings are in `scripts/voice_query.py`;
+everything Ukrainian (phrasings, answers, table headings) is in `scripts/voice_text.py`, for a native speaker to
+review. Add a phrasing when a medic's wording is not understood, and run `uv run --extra voice pytest`.
 
 ## Tests
 
@@ -74,7 +76,7 @@ cd visualizer && npx playwright test tests/simulator.spec.ts
 | `scripts/routing.py` | route search with computed travel time, automatic dispatch, road closure |
 | `scripts/simulate.py` | the simulator: ticks, movement, pickups and drops, reset |
 | `scripts/seed_toy_graph.py` | 13-junction test graph, no OSM needed |
-| `scripts/voice_query.py`, `voice_server.py` | spoken questions: intents, answers from the graph, Parakeet + MiniLM server |
+| `scripts/voice_query.py`, `voice_text.py`, `voice_server.py` | spoken questions in English and Ukrainian: intents, answers from the graph, all Ukrainian text, Parakeet + MiniLM server |
 | `scripts/extract_basemap.py` | offline basemap for the map |
 | `visualizer/` | TuringDB visualizer fork with the C2 page (`src/components/c2`, `src/pages/c2.tsx`) |
 | `.claude/plans/layer-1-simulator/plan.md` | the simulator plan, decisions and implementation notes |

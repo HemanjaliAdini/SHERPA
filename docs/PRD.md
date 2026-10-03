@@ -371,9 +371,12 @@ the extra scenarios in `docs/SCENARIOS.md`.
 - Messages requesting more UGVs or medics.
 - Vision or RF from drones and phones.
 - 🟡 Plain-language questions, spoken or typed, on the C2 page (`scripts/voice_query.py`, `voice_server.py`):
-  Parakeet speech to text, then the nearest of ~24 known questions by MiniLM similarity, answered from the graph
-  as a sentence and a table. Retrieval, not a generative LLM: it can only say what a handler computes, and under a
-  similarity of 0.5 it says it did not understand. Read-only; it never tasks a vehicle.
+  Parakeet speech to text, then the nearest of 24 known questions by multilingual MiniLM similarity, answered from
+  the graph as a sentence and a table, in English or Ukrainian (the language of the question). Retrieval, not a
+  generative LLM: it can only say what a handler computes, and under a similarity of 0.6 it says it did not
+  understand. Read-only; it never tasks a vehicle. *Model:* all-MiniLM-L6-v2 was rejected for Ukrainian: it splits
+  Cyrillic into letters and scored off-topic Ukrainian as high as real questions. Ukrainian texts
+  (`scripts/voice_text.py`) still need a native speaker's review.
 - A triage suggestion based on MITT.
 
 **Sunday until 12:00:** no new features. Record the demo video, finish the deck, and upload both well before 12:00.

@@ -7,6 +7,8 @@ import { Kbd } from './map-controls'
 export type VoiceAnswer = {
   understood: boolean
   question: string
+  /** language of the question and of the answer: 'en' or 'uk' */
+  lang?: string
   say: string
   title?: string
   score?: number
@@ -88,7 +90,9 @@ export const VoiceAsk = ({ graphName, change, now, onAnswer }: Props) => {
       onAnswer(json.understood ? json : null)
       if (speak && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(json.say))
+        const utterance = new SpeechSynthesisUtterance(json.say)
+        utterance.lang = json.lang === 'uk' ? 'uk-UA' : 'en-GB' // picks a Ukrainian voice (Lesya on macOS)
+        window.speechSynthesis.speak(utterance)
       }
     } catch (err) {
       setError(
@@ -194,7 +198,7 @@ export const VoiceAsk = ({ graphName, change, now, onAnswer }: Props) => {
         >
           <input
             className="bg-grey-800 border-grey-600 text-content-primary h-11 w-full min-w-0 rounded border px-2 text-sm outline-none focus:border-[#7f93aa]"
-            placeholder="or type: who is the most critical?"
+            placeholder="or type: who is the most critical? / хто найкритичніший?"
             value={typed}
             onChange={(e) => setTyped(e.target.value)}
           />
