@@ -35,6 +35,7 @@ import {
   setSpeed,
   setTriage,
 } from '@/components/c2/sim'
+import { useArrowCamera } from '@/components/c2/use-arrow-camera'
 import { VoiceAsk } from '@/components/c2/voice-ask'
 import { useScenarioStore } from '@/stores'
 
@@ -44,6 +45,10 @@ const C2Map3D = lazy(() =>
 )
 
 type ViewMode = '2d' | '3d'
+// Terrain height exaggeration steps for E; the sector's relief is small (0-167 m)
+const TERRAIN_SCALES = [0, 3, 6, 12]
+const nextTerrainScale = (k: number) =>
+  TERRAIN_SCALES[(TERRAIN_SCALES.indexOf(k) + 1) % TERRAIN_SCALES.length]
 
 const NodeKey = ({ color, label, small }: { color: string; label: string; small?: boolean }) => (
   <div className="mb-1 flex items-center gap-2">
@@ -74,7 +79,7 @@ const SectionTitle = ({ children }: { children: string }) => (
 )
 
 const Legend = () => (
-  <div className="bg-grey-900/95 text-content-primary border-grey-700 max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
+  <div className="bg-grey-900/95 text-content-primary border-grey-700 pointer-events-auto max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
     <SectionTitle>Nodes</SectionTitle>
     <NodeKey color={JUNCTION_COLOR} label="Junction" small />
     {(['T1', 'T2', 'T3'] as const).map((t) => (
@@ -111,18 +116,17 @@ const Legend = () => (
 const KEY_HELP = [
   'Arrows move',
   'Shift+arrows turn and tilt (3D)',
+  'Shift+Up twice top view, Shift+Down twice back',
   '+ / - zoom',
   'R reset',
   'V 2D/3D',
+  'E terrain height (3D)',
   '1-9 casualty',
   'Esc clear',
   '/ query',
   'M ask by voice',
   'L legend',
 ].join(' \u00b7 ')
-const PAN_PX = 150
-const TURN_DEG = 15
-const TILT_DEG = 10
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
@@ -141,8 +145,11 @@ export const TC2Page = () => {
   const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [mode, setMode] = useState<ViewMode>('3d')
+  const [terrainScale, setTerrainScale] = useState(TERRAIN_SCALES[2])
+  const cycleTerrain = () => setTerrainScale(nextTerrainScale)
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
+  useArrowCamera(mapRef)
   // After an action the simulator answers on its next pass (up to ~1 s), so keep refreshing a while
   const busyUntil = useRef(0)
 
@@ -235,19 +242,8 @@ export const TC2Page = () => {
         return
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      const map = mapRef.current
-      const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
-        e.key
-      ]
-      if (arrow) {
-        e.preventDefault()
-        if (e.shiftKey) {
-          if (arrow[0]) map?.rotate(arrow[0] * TURN_DEG)
-          else map?.tilt(-arrow[1] * TILT_DEG)
-        } else map?.pan(arrow[0] * PAN_PX, arrow[1] * PAN_PX)
-        return
-      }
       if (e.key === 'v' || e.key === 'V') setMode((m) => (m === '2d' ? '3d' : '2d'))
+      else if (e.key === 'e' || e.key === 'E') setTerrainScale(nextTerrainScale)
       else if (e.key === '+' || e.key === '=') mapRef.current?.zoomIn()
       else if (e.key === '-' || e.key === '_') mapRef.current?.zoomOut()
       else if (e.key === 'r' || e.key === 'R') mapRef.current?.resetView()
@@ -296,11 +292,11 @@ export const TC2Page = () => {
               </div>
             }
           >
-            <C2Map3D ref={mapRef} {...mapProps} />
+            <C2Map3D ref={mapRef} {...mapProps} terrainScale={terrainScale} />
           </Suspense>
         )}
 
-        <div className="absolute top-3 left-3 z-[1000] flex max-w-[calc(100%-24px)] flex-col items-start gap-2">
+        <div className="pointer-events-none absolute top-3 left-3 z-[1000] flex max-w-[calc(100%-24px)] flex-col items-start gap-2">
           <QueryBar
             graph={graph.data}
             graphName={graphName}
@@ -346,20 +342,31 @@ export const TC2Page = () => {
             <Kbd>V</Kbd>
           </span>
         </div>
+        {mode === '3d' && (
+          <button
+            type="button"
+            onClick={cycleTerrain}
+            title="Terrain height exaggeration (the sector is only 0-167 m high)"
+            className="bg-grey-900/90 border-grey-700 text-content-primary hover:bg-grey-800 absolute top-12 right-[138px] z-[1000] flex items-center gap-2 rounded-md border px-3 py-1 text-xs font-medium"
+          >
+            Terrain {terrainScale ? `${terrainScale}x` : 'off'} <Kbd>E</Kbd>
+          </button>
+        )}
 
-        <div className="absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
+        <div className="pointer-events-none absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
           {legendOpen && <Legend />}
           <button
             type="button"
             onClick={() => setLegendOpen(!legendOpen)}
-            className="bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
+            className="pointer-events-auto bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
           >
             {legendOpen ? 'Hide legend' : 'Legend'} <Kbd>L</Kbd>
           </button>
         </div>
 
-        <div className="absolute right-3 bottom-6 z-[1000] flex flex-col items-end gap-2">
+        <div className="pointer-events-none absolute right-3 bottom-6 z-[1000] flex flex-col items-end gap-2">
           <MapControls
+            cameraControls={mode === '3d'}
             onZoomIn={() => mapRef.current?.zoomIn()}
             onZoomOut={() => mapRef.current?.zoomOut()}
             onReset={() => mapRef.current?.resetView()}
