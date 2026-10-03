@@ -13,20 +13,38 @@ export type GraphNode = {
 }
 
 export type GraphEdge = {
+  /** TuringDB edge ids drawn by this line (a two-way road has one id per direction) */
+  ids: number[]
   src: number
   dst: number
   type: string
   highway: string
   threat: number
   closed: boolean
+  /** length_m for roads, distance_m for NEAR links */
+  metres: number | null
+  /** road speeds in km/h (null for non-road edges) */
+  speedUgv: number | null
+  speedAmbulance: number | null
 }
 
-export type GeoGraph = { nodes: Map<number, GraphNode>; edges: GraphEdge[]; unplaced: number }
+export type GeoGraph = {
+  nodes: Map<number, GraphNode>
+  edges: GraphEdge[]
+  /** TuringDB edge id -> index into edges */
+  edgeIndex: Map<number, number>
+  /** node id -> indices into edges touching it */
+  incident: Map<number, number[]>
+  /** mission node id -> its route as junction ids in ROUTE_STEP order */
+  routes: Map<number, number[]>
+  unplaced: number
+}
 
 const NODES_QUERY =
   'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category'
 const EDGES_QUERY =
-  'MATCH (a)-[r]->(b) RETURN id(a), id(b), type(r), r.highway, r.threat_level, r.status'
+  'MATCH (a)-[r]->(b) RETURN id(r), id(a), id(b), type(r), r.highway, r.threat_level, r.status, ' +
+  'r.length_m, r.distance_m, r.speed_ugv_kmh, r.speed_ambulance_kmh, r.order'
 // Nodes without coordinates (Threat, Mission) take the mean of their placed neighbours; a few
 // passes let positions flow along short chains such as Mission -> Vehicle -> Junction
 const PLACEMENT_PASSES = 3
@@ -58,32 +76,58 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
   }
 
   const edges: GraphEdge[] = []
+  const edgeIndex = new Map<number, number>()
+  const incident = new Map<number, number[]>()
   const neighbours = new Map<number, number[]>()
-  const link = (a: number, b: number) => {
-    if (!neighbours.has(a)) neighbours.set(a, [])
-    neighbours.get(a)?.push(b)
+  const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => {
+    const list = m.get(k)
+    if (list) list.push(v)
+    else m.set(k, [v])
   }
-  const seenRoads = new Set<string>()
+  const roadByPair = new Map<string, number>()
+  const routeSteps = new Map<number, [number, number][]>()
+  const nullableNumber = (v: unknown) => (v === null || v === undefined ? null : Number(v))
   for (const chunk of edgeData) {
-    const [src, dst, type, highway, threat, status] = chunk as unknown[][]
+    const [eid, src, dst, type, highway, threat, status, length, distance, ugv, ambulance, order] =
+      chunk as unknown[][]
     for (let i = 0; i < src.length; i++) {
+      const id = Number(eid[i])
       const s = Number(src[i])
       const d = Number(dst[i])
-      link(s, d)
-      link(d, s)
-      // ROAD edges exist once per direction; draw each road once
+      // A mission's ROUTE_STEP edges become one ordered route line, not one spoke per junction,
+      // and do not pull the mission node's derived position along the route
+      if (type[i] === 'ROUTE_STEP') {
+        push(routeSteps, s, [Number(order[i] ?? 0), d] as [number, number])
+        continue
+      }
+      push(neighbours, s, d)
+      push(neighbours, d, s)
+      // ROAD edges exist once per direction; draw each road once and map both ids to it
       if (type[i] === 'ROAD') {
         const key = s < d ? `${s}-${d}` : `${d}-${s}`
-        if (seenRoads.has(key)) continue
-        seenRoads.add(key)
+        const existing = roadByPair.get(key)
+        if (existing !== undefined) {
+          edges[existing].ids.push(id)
+          edgeIndex.set(id, existing)
+          continue
+        }
+        roadByPair.set(key, edges.length)
       }
+      const metres = length[i] ?? distance[i]
+      edgeIndex.set(id, edges.length)
+      push(incident, s, edges.length)
+      push(incident, d, edges.length)
       edges.push({
+        ids: [id],
         src: s,
         dst: d,
         type: str(type[i]),
         highway: str(highway[i]),
         threat: Number(threat[i] ?? 0),
         closed: status[i] === 'closed',
+        metres: nullableNumber(metres),
+        speedUgv: nullableNumber(ugv[i]),
+        speedAmbulance: nullableNumber(ambulance[i]),
       })
     }
   }
@@ -101,5 +145,13 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
     }
   }
 
-  return { nodes, edges, unplaced: pending.size }
+  const routes = new Map<number, number[]>()
+  for (const [mission, steps] of routeSteps) {
+    routes.set(
+      mission,
+      steps.sort((a, b) => a[0] - b[0]).map(([, junction]) => junction)
+    )
+  }
+
+  return { nodes, edges, edgeIndex, incident, routes, unplaced: pending.size }
 }

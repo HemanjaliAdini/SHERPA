@@ -440,25 +440,37 @@ export async function getEdges(args: GetEdgesArgs): Promise<GetEdgesResponse> {
   return data
 }
 
-export async function executeCypherQuery(args: CypherQueryArgs): Promise<CypherQueryResponse> {
+export type CypherQueryFullResponse = {
+  columns: string[]
+  types: string[]
+  data: CypherQueryResponse
+}
+
+/** Like executeCypherQuery, but keeps the column names and types from the response header. */
+export async function executeCypherQueryFull(args: CypherQueryArgs): Promise<CypherQueryFullResponse> {
   const params = new URLSearchParams({ graph: args.graph })
   if (args.change) params.set('change', args.change)
   if (args.commit) params.set('commit', args.commit)
 
-  return await fetch(`/api/query?${params}`, {
+  const res = await fetch(`/api/query?${params}`, {
     method: 'POST',
     signal: args.signal ?? args.controller?.signal,
     headers: {
       'Content-Type': 'text/plain',
     },
     body: args.query,
-  }).then((res) =>
-    res.text().then((text) => {
-      const json = JSON.parse(text)
-      if (json.error) {
-        throw new CypherQueryError(json.error, json.error_details || '')
-      }
-      return json.data
-    })
-  )
+  })
+  const json = JSON.parse(await res.text())
+  if (json.error) {
+    throw new CypherQueryError(json.error, json.error_details || '')
+  }
+  return {
+    columns: json.header?.column_names ?? [],
+    types: json.header?.column_types ?? [],
+    data: json.data,
+  }
+}
+
+export async function executeCypherQuery(args: CypherQueryArgs): Promise<CypherQueryResponse> {
+  return (await executeCypherQueryFull(args)).data
 }
