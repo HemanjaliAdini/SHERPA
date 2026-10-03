@@ -1,0 +1,20 @@
+{
+  "bounds": [
+    34.999861,
+    47.400139,
+    35.949861,
+    47.900139
+  ],
+  "width": 1710,
+  "height": 900,
+  "min_m": 0.0,
+  "max_m": 166.7,
+  "decoder": {
+    "rScaler": 6553.6,
+    "gScaler": 25.6,
+    "bScaler": 0.1,
+    "offset": -10000
+  },
+  "source": "https://copernicus-dem-30m.s3.amazonaws.com/Copernicus_DSM_COG_10_N47_00_E035_00_DEM/Copernicus_DSM_COG_10_N47_00_E035_00_DEM.tif",
+  "attribution": "Copernicus DEM GLO-30 \u00a9 DLR e.V. 2010-2014 and \u00a9 Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA"
+}
