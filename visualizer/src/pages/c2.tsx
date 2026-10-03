@@ -66,7 +66,7 @@ const SectionTitle = ({ children }: { children: string }) => (
 )
 
 const Legend = () => (
-  <div className="bg-grey-900/95 text-content-primary border-grey-700 max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
+  <div className="bg-grey-900/95 text-content-primary border-grey-700 pointer-events-auto max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
     <SectionTitle>Nodes</SectionTitle>
     <NodeKey color={JUNCTION_COLOR} label="Junction" small />
     {(['T1', 'T2', 'T3'] as const).map((t) => (
@@ -242,11 +242,11 @@ export const TC2Page = () => {
               </div>
             }
           >
-            <C2Map3D ref={mapRef} {...mapProps} />
+            <C2Map3D ref={mapRef} {...mapProps} terrainScale={terrainScale} />
           </Suspense>
         )}
 
-        <div className="absolute top-3 left-3 z-[1000] max-w-[calc(100%-24px)]">
+        <div className="pointer-events-none absolute top-3 left-3 z-[1000] max-w-[calc(100%-24px)]">
           <QueryBar
             graph={graph.data}
             graphName={graphName}
@@ -279,19 +279,29 @@ export const TC2Page = () => {
             <Kbd>V</Kbd>
           </span>
         </div>
+        {mode === '3d' && (
+          <button
+            type="button"
+            onClick={cycleTerrain}
+            title="Terrain height exaggeration (the sector is only 0-167 m high)"
+            className="bg-grey-900/90 border-grey-700 text-content-primary hover:bg-grey-800 absolute top-12 right-[138px] z-[1000] flex items-center gap-2 rounded-md border px-3 py-1 text-xs font-medium"
+          >
+            Terrain {terrainScale ? `${terrainScale}x` : 'off'} <Kbd>E</Kbd>
+          </button>
+        )}
 
-        <div className="absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
+        <div className="pointer-events-none absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
           {legendOpen && <Legend />}
           <button
             type="button"
             onClick={() => setLegendOpen(!legendOpen)}
-            className="bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
+            className="pointer-events-auto bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
           >
             {legendOpen ? 'Hide legend' : 'Legend'} <Kbd>L</Kbd>
           </button>
         </div>
 
-        <div className="absolute right-3 bottom-6 z-[1000] flex flex-col items-end gap-2">
+        <div className="pointer-events-none absolute right-3 bottom-6 z-[1000] flex flex-col items-end gap-2">
           <MapControls
             onZoomIn={() => mapRef.current?.zoomIn()}
             onZoomOut={() => mapRef.current?.zoomOut()}

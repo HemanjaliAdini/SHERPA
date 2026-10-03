@@ -79,7 +79,7 @@ type Props = {
 }
 
 export const MapControls = ({ onZoomIn, onZoomOut, onReset, onClear, hasSelection }: Props) => (
-  <div className="flex flex-col gap-2">
+  <div className="pointer-events-auto flex flex-col gap-2">
     <Control icon={ICONS.plus} label="Zoom in" shortcut="+" onClick={onZoomIn} />
     <Control icon={ICONS.minus} label="Zoom out" shortcut="-" onClick={onZoomOut} />
     <Control icon={ICONS.reset} label="Reset view" shortcut="R" onClick={onReset} />
