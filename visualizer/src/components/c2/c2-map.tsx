@@ -18,9 +18,16 @@ import {
 import type { GeoGraph, GraphEdge, GraphNode } from './graph-data'
 import { inspectNode } from './inspector'
 import type { Selection } from './selection'
+import { HOME_BOUNDS, HOME_PADDING, SECTOR_BOUNDS } from './view'
 
-// Sector bounds (south-west, north-east): Robotyne front to Zaporizhzhia
-const SECTOR_BOUNDS = L.latLngBounds([47.4, 35.0], [47.9, 35.95])
+const latLngBounds = ([[w, south], [e, n]]: [[number, number], [number, number]]) =>
+  L.latLngBounds([south, w], [n, e])
+const SECTOR = latLngBounds(SECTOR_BOUNDS)
+const HOME = latLngBounds(HOME_BOUNDS)
+const HOME_FIT = {
+  paddingTopLeft: [HOME_PADDING.left, HOME_PADDING.top] as L.PointTuple,
+  paddingBottomRight: [HOME_PADDING.right, HOME_PADDING.bottom] as L.PointTuple,
+}
 const VILLAGE_LABEL_MIN_ZOOM = 11
 const DIMMED = 0.12
 
@@ -42,6 +49,11 @@ export type C2MapHandle = {
   resetView: () => void
   /** Bring these nodes into view */
   focusNodes: (nids: number[]) => void
+  /** Move the view by screen pixels (arrow keys) */
+  pan: (dx: number, dy: number) => void
+  /** Turn and tilt the camera, in degrees; only the 3D view can */
+  rotate: (degrees: number) => void
+  tilt: (degrees: number) => void
 }
 
 async function loadGeoJson(name: string): Promise<GeoJSON.FeatureCollection> {
@@ -114,11 +126,11 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
       minZoom: 8,
       maxZoom: 16,
       zoomSnap: 0.5,
-      maxBounds: SECTOR_BOUNDS.pad(0.3),
+      maxBounds: SECTOR.pad(0.3),
     })
     m.attributionControl.setPrefix(false)
     m.attributionControl.addAttribution('Map data © OpenStreetMap contributors (ODbL)')
-    m.fitBounds(SECTOR_BOUNDS)
+    m.fitBounds(HOME, HOME_FIT)
     m.on('click', () => latest.current.onSelectNode(null))
     map.current = m
 
@@ -296,8 +308,11 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
   useImperativeHandle(ref, () => ({
     zoomIn: () => map.current?.zoomIn(),
     zoomOut: () => map.current?.zoomOut(),
-    resetView: () => map.current?.flyToBounds(SECTOR_BOUNDS, { duration: 0.6 }),
+    resetView: () => map.current?.flyToBounds(HOME, { ...HOME_FIT, duration: 0.6 }),
     focusNodes,
+    pan: (dx, dy) => map.current?.panBy([dx, dy], { duration: 0.2 }),
+    rotate: () => undefined,
+    tilt: () => undefined,
   }))
 
   // Zoom to the selection on request, so a query result is brought into view

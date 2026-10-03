@@ -7,7 +7,7 @@ import {
   type PickingInfo,
   WebMercatorViewport,
 } from '@deck.gl/core'
-import { ColumnLayer, GeoJsonLayer, LineLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
+import { GeoJsonLayer, LineLayer, PathLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import DeckGL from '@deck.gl/react'
 import {
   forwardRef,
@@ -26,6 +26,7 @@ import {
   EDGE_STYLE,
   HIGHLIGHT_COLOR,
   MAP_BG,
+  MISSION_ROUTE_STYLE,
   OTHER_EDGE_STYLE,
   ROAD_BASE_COLOR,
   ROAD_CLOSED_COLOR,
@@ -36,6 +37,7 @@ import {
 import type { GeoGraph, GraphEdge, GraphNode } from './graph-data'
 import { inspectNode } from './inspector'
 import type { Selection } from './selection'
+import { HOME_BOUNDS, HOME_PADDING } from './view'
 
 type Props = {
   graph: GeoGraph | undefined
@@ -55,43 +57,11 @@ type ViewState = MapViewState & {
 }
 
 // Sector bounds [[west, south], [east, north]]: Robotyne front to Zaporizhzhia
-const SECTOR_BOUNDS: [[number, number], [number, number]] = [
-  [35.0, 47.4],
-  [35.95, 47.9],
-]
 const PITCH = 55
 const BEARING = -15
 const VILLAGE_LABEL_MIN_ZOOM = 11
 const DIMMED = 0.12
 const ORBIT_DEG_PER_SEC = 6
-// Column heights are a 0..1 fraction of this, in metres at REFERENCE_ZOOM. Heights shrink less
-// than the map when zooming in, so columns stay readable from the overview to street level.
-const MAX_HEIGHT_M = 6500
-const REFERENCE_ZOOM = 10
-const HEIGHT_ZOOM_FACTOR = 0.9
-const TRIAGE_HEIGHT: Record<string, number> = { T1: 1, T2: 0.66, T3: 0.33, T4: 0.15 }
-const MIN_HEIGHT = 0.06
-const MAX_FREE_BEDS = 20
-
-/** 0..1 height of a node's column: what the height means depends on the node's label. */
-function nodeHeight(n: GraphNode): number {
-  const m = n.metric ?? 0
-  switch (n.label) {
-    case 'Junction':
-      return 0
-    case 'Casualty':
-      return TRIAGE_HEIGHT[n.kind] ?? MIN_HEIGHT
-    case 'MedicalPoint':
-      return Math.max(MIN_HEIGHT, Math.min(1, m / MAX_FREE_BEDS))
-    case 'Vehicle':
-      return Math.max(MIN_HEIGHT, Math.min(1, m / 100))
-    case 'Threat':
-      return Math.max(MIN_HEIGHT, Math.min(1, m))
-    default:
-      return MIN_HEIGHT
-  }
-}
-
 function rgba(color: string, alpha = 1): [number, number, number, number] {
   const a = Math.round(alpha * 255)
   if (color.startsWith('#')) {
@@ -130,9 +100,9 @@ function loadBasemap(): Promise<Basemap> {
 // Ground layers are drawn in order without depth testing, so coplanar layers never z-fight
 const GROUND = { depthCompare: 'always', depthWriteEnabled: false } as const
 
-function fitSector(width: number, height: number) {
+function fitHome(width: number, height: number) {
   const vp = new WebMercatorViewport({ width, height })
-  return vp.fitBounds(SECTOR_BOUNDS, { padding: 40 })
+  return vp.fitBounds(HOME_BOUNDS, { padding: HOME_PADDING })
 }
 
 export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
@@ -164,11 +134,11 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     }
   }, [])
 
-  // Start framed on the whole sector, tilted
+  // Start framed on the operational area (home view), tilted
   useLayoutEffect(() => {
     const el = container.current
     if (!el) return
-    const { longitude, latitude, zoom } = fitSector(el.clientWidth, el.clientHeight)
+    const { longitude, latitude, zoom } = fitHome(el.clientWidth, el.clientHeight)
     setViewState((v) => ({ ...v, longitude, latitude, zoom }))
   }, [])
 
@@ -234,7 +204,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
   function resetView() {
     const el = container.current
     if (!el) return
-    const { longitude, latitude, zoom } = fitSector(el.clientWidth, el.clientHeight)
+    const { longitude, latitude, zoom } = fitHome(el.clientWidth, el.clientHeight)
     flying.current = true
     setViewState((v) => ({
       ...v,
@@ -258,11 +228,35 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     }))
 
   // Same commands as the 2D map, so the page's big buttons and keys work in both views
+  // Arrow keys: move the camera across the ground in screen directions, so "up" is always
+  // away from the viewer whatever the camera bearing
+  const pan = (dx: number, dy: number) =>
+    setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => {
+      const el = container.current
+      if (!el) return v
+      const vp = new WebMercatorViewport({ ...v, width: el.clientWidth, height: el.clientHeight })
+      const [longitude, latitude] = vp.unproject([
+        el.clientWidth / 2 + dx,
+        el.clientHeight / 2 + dy,
+      ])
+      return { ...v, longitude, latitude }
+    })
+  const turn = (bearing: number, pitch: number) =>
+    setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => ({
+      ...v,
+      bearing: ((v.bearing ?? 0) + bearing) % 360,
+      pitch: Math.min(v.maxPitch ?? 75, Math.max(0, (v.pitch ?? 0) + pitch)),
+    }))
+
+  // Same commands as the 2D map, so the page's big buttons and keys work in both views
   useImperativeHandle(ref, () => ({
     zoomIn: () => zoomBy(1),
     zoomOut: () => zoomBy(-1),
     resetView,
     focusNodes: flyToNodes,
+    pan,
+    rotate: (degrees) => turn(degrees, 0),
+    tilt: (degrees) => turn(0, degrees),
   }))
 
   // Fly to the selection on request, so a query result is brought into view
@@ -289,7 +283,15 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         anchors.add(e.dst)
       }
     })
-    return { junctions, entities, roads, links, anchors }
+    const routes = [...graph.routes.values()]
+      .map((route) =>
+        route
+          .map((nid) => graph.nodes.get(nid))
+          .filter((n) => n !== undefined)
+          .map((n) => [n.lon, n.lat] as [number, number])
+      )
+      .filter((path) => path.length > 1)
+    return { junctions, entities, roads, links, anchors, routes }
   }, [graph])
 
   const places = useMemo<Place[]>(
@@ -309,9 +311,6 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     [basemap]
   )
 
-  const heightScale = 2 ** ((REFERENCE_ZOOM - viewState.zoom) * HEIGHT_ZOOM_FACTOR)
-  // Quantised so the link and label layers are not rebuilt on every animation frame
-  const z = Math.round(heightScale * 100) / 100
   const showVillages = viewState.zoom >= VILLAGE_LABEL_MIN_ZOOM
   // Layer data must keep its identity across camera frames, or deck.gl re-processes it each frame
   const placeLabels = useMemo(
@@ -322,11 +321,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     () => (data && selection ? data.entities.filter((n) => selection.nodes.has(n.nid)) : []),
     [data, selection]
   )
-  const top = (n: GraphNode): [number, number, number] => [
-    n.lon,
-    n.lat,
-    nodeHeight(n) * MAX_HEIGHT_M * z,
-  ]
+  const ground = (n: GraphNode): [number, number] => [n.lon, n.lat]
 
   const nodeAlpha = (nid: number) => (!selection || selection.nodes.has(nid) ? 1 : DIMMED)
   const edgeLook = (i: number): { color: Color; width: number } => {
@@ -395,8 +390,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         id: 'roads',
         data: data.roads,
         widthUnits: 'pixels',
-        getSourcePosition: (i) => top(graph.nodes.get(graph.edges[i].src) as GraphNode),
-        getTargetPosition: (i) => top(graph.nodes.get(graph.edges[i].dst) as GraphNode),
+        getSourcePosition: (i) => ground(graph.nodes.get(graph.edges[i].src) as GraphNode),
+        getTargetPosition: (i) => ground(graph.nodes.get(graph.edges[i].dst) as GraphNode),
         getColor: (i) => edgeLook(i).color,
         getWidth: (i) => edgeLook(i).width,
         updateTriggers: { getColor: selection, getWidth: selection },
@@ -423,38 +418,47 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         },
         parameters: GROUND,
       }),
-    // NEAR / AFFECTS: from the top of the entity's column down to its junction
+    // Mission routes, through their ROUTE_STEP junctions in order
+    data &&
+      new PathLayer<[number, number][]>({
+        id: 'mission-routes',
+        data: data.routes,
+        widthUnits: 'pixels',
+        getPath: (p) => p,
+        getWidth: MISSION_ROUTE_STYLE.weight,
+        getColor: rgba(MISSION_ROUTE_STYLE.color, MISSION_ROUTE_STYLE.opacity),
+        parameters: GROUND,
+      }),
+    // NEAR / AFFECTS and mission links between nodes
     data &&
       graph &&
       new LineLayer<number>({
         id: 'links',
         data: data.links,
         widthUnits: 'pixels',
-        getSourcePosition: (i) => top(graph.nodes.get(graph.edges[i].src) as GraphNode),
-        getTargetPosition: (i) => top(graph.nodes.get(graph.edges[i].dst) as GraphNode),
+        getSourcePosition: (i) => ground(graph.nodes.get(graph.edges[i].src) as GraphNode),
+        getTargetPosition: (i) => ground(graph.nodes.get(graph.edges[i].dst) as GraphNode),
         getColor: (i) => edgeLook(i).color,
         getWidth: (i) => edgeLook(i).width,
-        updateTriggers: {
-          getSourcePosition: z,
-          getTargetPosition: z,
-          getColor: selection,
-          getWidth: selection,
-        },
+        updateTriggers: { getColor: selection, getWidth: selection },
+        parameters: GROUND,
       }),
     data &&
-      new ColumnLayer<GraphNode>({
+      new ScatterplotLayer<GraphNode>({
         id: 'entities',
         data: data.entities,
         pickable: true,
-        extruded: true,
-        diskResolution: 16,
         radiusUnits: 'pixels',
-        radius: 7,
-        elevationScale: heightScale,
+        getRadius: (n) => (selection?.nodes.has(n.nid) ? 8.5 : 7),
+        stroked: true,
+        lineWidthUnits: 'pixels',
+        getLineWidth: 2,
         getPosition: (n) => [n.lon, n.lat],
-        getElevation: (n) => nodeHeight(n) * MAX_HEIGHT_M,
         getFillColor: (n) => rgba(nodeColor(n.label, n.kind), nodeAlpha(n.nid)),
-        updateTriggers: { getFillColor: selection },
+        // Same as 2D: white outline when the position is derived from neighbours
+        getLineColor: (n) => rgba(n.derived ? '#ffffff' : MAP_BG, nodeAlpha(n.nid)),
+        updateTriggers: { getRadius: selection, getFillColor: selection, getLineColor: selection },
+        parameters: GROUND,
       }),
     // Selected scenario nodes get a highlight ring at their base
     data &&
@@ -495,7 +499,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       new TextLayer<GraphNode>({
         id: 'entity-labels',
         data: data.entities,
-        getPosition: top,
+        getPosition: ground,
         getText: (n) => n.id,
         getSize: 11,
         getColor: (n) => rgba('#e5edf5', !selection || selection.nodes.has(n.nid) ? 1 : 0.25),
@@ -507,7 +511,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         fontSettings: { sdf: true },
         outlineWidth: 3,
         outlineColor: rgba(MAP_BG),
-        updateTriggers: { getPosition: z, getColor: selection },
+        updateTriggers: { getColor: selection },
         parameters: { depthCompare: 'always' },
       }),
   ]

@@ -18,7 +18,7 @@ export const useAppStore = create<AppStore>((set) => ({
   theme: 'dark' as ThemeType,
   setTheme: (v: ThemeType) => set({ theme: v }),
 
-  page: 'viewer' as PageType,
+  page: 'c2' as PageType,
   setPage: (v: PageType) => set({ page: v }),
 
   graphName: undefined,

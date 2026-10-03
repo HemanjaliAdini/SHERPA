@@ -64,7 +64,7 @@ const SectionTitle = ({ children }: { children: string }) => (
   </div>
 )
 
-const Legend = ({ mode }: { mode: ViewMode }) => (
+const Legend = () => (
   <div className="bg-grey-900/95 text-content-primary border-grey-700 max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
     <SectionTitle>Nodes</SectionTitle>
     <NodeKey color={JUNCTION_COLOR} label="Junction" small />
@@ -93,23 +93,26 @@ const Legend = ({ mode }: { mode: ViewMode }) => (
     <EdgeKey color={EDGE_STYLE.NEAR.color} dashed label="NEAR" />
     <EdgeKey color={EDGE_STYLE.AFFECTS.color} dashed label="AFFECTS" />
     <EdgeKey color={HIGHLIGHT_COLOR} label="Selected / query result" />
-    {mode === '3d' && (
-      <>
-        <SectionTitle>Column height</SectionTitle>
-        <div className="text-content-fourth">
-          Casualty: triage (T1 tallest). Medical point: free beds. Vehicle: battery %. Threat:
-          level.
-        </div>
-      </>
-    )}
     <div className="text-content-fourth mt-2">
       Click a node to see its relationships; click empty map to clear.
     </div>
   </div>
 )
 
-const KEY_HELP =
-  '1-9 casualty \u00b7 + / - zoom \u00b7 R reset \u00b7 Esc clear \u00b7 / query \u00b7 L legend'
+const KEY_HELP = [
+  'Arrows move',
+  'Shift+arrows turn and tilt (3D)',
+  '+ / - zoom',
+  'R reset',
+  'V 2D/3D',
+  '1-9 casualty',
+  'Esc clear',
+  '/ query',
+  'L legend',
+].join(' \u00b7 ')
+const PAN_PX = 150
+const TURN_DEG = 15
+const TILT_DEG = 10
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
@@ -126,7 +129,7 @@ export const TC2Page = () => {
   const [focusNid, setFocusNid] = useState<number | null>(null)
   const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [mode, setMode] = useState<ViewMode>('2d')
+  const [mode, setMode] = useState<ViewMode>('3d')
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
 
@@ -191,7 +194,20 @@ export const TC2Page = () => {
         return
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === '+' || e.key === '=') mapRef.current?.zoomIn()
+      const map = mapRef.current
+      const arrow = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[
+        e.key
+      ]
+      if (arrow) {
+        e.preventDefault()
+        if (e.shiftKey) {
+          if (arrow[0]) map?.rotate(arrow[0] * TURN_DEG)
+          else map?.tilt(-arrow[1] * TILT_DEG)
+        } else map?.pan(arrow[0] * PAN_PX, arrow[1] * PAN_PX)
+        return
+      }
+      if (e.key === 'v' || e.key === 'V') setMode((m) => (m === '2d' ? '3d' : '2d'))
+      else if (e.key === '+' || e.key === '=') mapRef.current?.zoomIn()
       else if (e.key === '-' || e.key === '_') mapRef.current?.zoomOut()
       else if (e.key === 'r' || e.key === 'R') mapRef.current?.resetView()
       else if (e.key === 'l' || e.key === 'L') setLegendOpen((open) => !open)
@@ -272,10 +288,13 @@ export const TC2Page = () => {
               {m.toUpperCase()}
             </button>
           ))}
+          <span className="text-content-fourth border-grey-700 flex items-center border-l px-2">
+            <Kbd>V</Kbd>
+          </span>
         </div>
 
         <div className="absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
-          {legendOpen && <Legend mode={mode} />}
+          {legendOpen && <Legend />}
           <button
             type="button"
             onClick={() => setLegendOpen(!legendOpen)}
