@@ -634,7 +634,8 @@ A1 lands.
 
 **A2. Sensor fusion and the triage recommendation.** Owner: Adolfo. ⬜ The contract is in section 5, "Sensor
 fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
-- **A2a. Doctrine graph in `evac`.** Copy `solider-triage-sideproject/app/assets/graph/triage_v3.jsonl` from branch
+- ✅ **A2a. Doctrine graph in `evac`.** Done: `data/doctrine/triage_v3.jsonl`, loaded by `scripts/seed_doctrine.py`
+  from `build_graph.sh` (all 472 nodes and 774 relationships; Q2 checked). Was: Copy `solider-triage-sideproject/app/assets/graph/triage_v3.jsonl` from branch
   `feat/triage-app` to `data/doctrine/triage_v3.jsonl`. Load it in `scripts/build_graph.sh` after the scenario: with
   `LOAD JSONL` if TuringDB can load into an existing graph, else a small `scripts/seed_doctrine.py` that creates its
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
