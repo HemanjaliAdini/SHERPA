@@ -1,5 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { C2Map, type C2MapHandle } from '@/components/c2/c2-map'
 import { CasualtyQueue } from '@/components/c2/casualty-queue'
@@ -18,6 +18,7 @@ import {
 } from '@/components/c2/colors'
 import { fetchGraph } from '@/components/c2/graph-data'
 import { Kbd, MapControls } from '@/components/c2/map-controls'
+import { MissionPlanner } from '@/components/c2/mission-planner'
 import { QueryBar } from '@/components/c2/query-bar'
 import {
   type Casualty,
@@ -107,6 +108,9 @@ export const TC2Page = () => {
   const [queryOpen, setQueryOpen] = useState(false)
   const [legendOpen, setLegendOpen] = useState(false)
   const [focusNid, setFocusNid] = useState<number | null>(null)
+  const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
 
   const graph = useQuery({
@@ -130,6 +134,24 @@ export const TC2Page = () => {
     selectNode(c.nid)
     mapRef.current?.focusNodes(c.junction === null ? [c.nid] : [c.nid, c.junction])
   }
+  const previewPlan = useCallback((preview: Selection | null) => {
+    setSelection(preview)
+    if (preview) setFitRequest((n) => n + 1)
+  }, [])
+
+  const missionCreated = (missionId: string) => {
+    setPlanningFor(null)
+    setNotice(`Mission ${missionId} created and committed to the graph`)
+    queryClient.invalidateQueries({ queryKey: ['c2-graph'] })
+    queryClient.invalidateQueries({ queryKey: ['c2-scenario'] })
+  }
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice])
+
   // Keyboard handler reads the latest queue through a ref
   const queueRef = useRef<{ queue: Casualty[]; locate: (c: Casualty) => void }>({
     queue,
@@ -148,6 +170,7 @@ export const TC2Page = () => {
         if (isTyping(e.target)) (e.target as HTMLElement).blur()
         setSelection(null)
         setFocusNid(null)
+        setPlanningFor(null)
         return
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
@@ -237,10 +260,37 @@ export const TC2Page = () => {
           <span className="text-content-fourth">Scenario time</span>
           <span className="font-mono text-sm font-semibold">{formatClock(now)}</span>
         </div>
+        {notice && (
+          <div className="border-b border-[#166534] bg-[#14532d] px-4 py-2 text-sm font-medium">
+            {notice}
+          </div>
+        )}
         {scenario.isError ? (
           <div className="p-4 text-sm text-[#fca5a5]">Could not load the scenario.</div>
+        ) : planningFor && graph.data && scenario.data ? (
+          <MissionPlanner
+            key={planningFor.nid}
+            graph={graph.data}
+            graphName={graphName}
+            change={change}
+            scenario={scenario.data}
+            initial={planningFor}
+            now={now}
+            onPreview={previewPlan}
+            onCreated={missionCreated}
+            onClose={() => setPlanningFor(null)}
+          />
         ) : (
-          <CasualtyQueue queue={queue} now={now} selectedNid={focusNid} onLocate={locateCasualty} />
+          <CasualtyQueue
+            queue={queue}
+            now={now}
+            selectedNid={focusNid}
+            onLocate={locateCasualty}
+            onPlan={(c) => {
+              setNotice(null)
+              setPlanningFor(c)
+            }}
+          />
         )}
       </aside>
     </div>
