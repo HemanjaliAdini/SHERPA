@@ -105,6 +105,8 @@ type Place = { position: [number, number]; name: string; major: boolean }
 
 let basemapPromise: Promise<Basemap> | null = null
 const TERRAIN_EXTENSIONS = [new TerrainExtension()]
+// Terrain mesh tolerance in real metres (scaled by the exaggeration where it is used)
+const TERRAIN_MESH_ERROR_M = 4
 
 function loadBasemap(): Promise<Basemap> {
   const names = ['forest', 'builtup', 'water', 'rivers', 'railways', 'places'] as const
@@ -150,10 +152,10 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     loadBasemap().then((b) => !cancelled && setBasemap(b))
     loadTerrainMeta()
       .then(async (t) => {
-        const sampler = await loadHeightSampler(t)
         if (cancelled) return
         setTerrain(t)
-        setHeightAt(() => sampler)
+        const sampler = await loadHeightSampler(t)
+        if (!cancelled) setHeightAt(() => sampler)
       })
       .catch(() => undefined) // no terrain built: the map stays flat
     return () => {
@@ -254,7 +256,6 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       zoom: Math.min(v.maxZoom ?? 16, Math.max(v.minZoom ?? 8, v.zoom + delta)),
     }))
 
-  // Same commands as the 2D map, so the page's big buttons and keys work in both views
   // Arrow keys: move the camera across the ground in screen directions, so "up" is always
   // away from the viewer whatever the camera bearing
   const pan = (dx: number, dy: number) =>
@@ -366,7 +367,10 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     return { color: rgba(edgeColor(e), DIMMED), width }
   }
 
-  const terrainOn = terrain !== null && heightAt !== null && terrainScale > 0
+  // Terrain and the draped basemap show as soon as the small metadata file loads; clickable
+  // layers move up onto it once the height sampler is ready (they draw on top either way)
+  const terrainOn = terrain !== null && terrainScale > 0
+
   const drape = terrainOn ? { extensions: TERRAIN_EXTENSIONS } : {}
   // deck.gl does not rebuild a layer when its extensions change, so draped and flat layers get
   // different ids and toggling terrain swaps them cleanly
@@ -394,7 +398,9 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
         },
         texture: null,
         color: [24, 33, 44],
-        meshMaxError: 3,
+        // Error is in exaggerated metres: keep ~4 real metres at any exaggeration, or the mesh
+        // gets far more triangles than the 60 m cells can show and takes seconds to build
+        meshMaxError: TERRAIN_MESH_ERROR_M * terrainScale,
         operation: 'terrain+draw',
       }),
     ...(basemap

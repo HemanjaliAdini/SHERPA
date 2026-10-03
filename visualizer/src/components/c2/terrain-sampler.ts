@@ -17,9 +17,10 @@ export const loadTerrainMeta = (): Promise<TerrainMeta> =>
   fetch('/terrain/elevation.json').then((r) => r.json())
 
 export async function loadHeightSampler(meta: TerrainMeta): Promise<HeightAt> {
-  const image = new Image()
-  image.src = TERRAIN_IMAGE
-  await image.decode()
+  // fetch + createImageBitmap, not <img>.decode(): decode() can wait for a paint, which an idle
+  // page may not do, leaving the 3D view without terrain until the camera first moves
+  const blob = await (await fetch(TERRAIN_IMAGE)).blob()
+  const image = await createImageBitmap(blob)
   const { width, height } = image
   const canvas = document.createElement('canvas')
   canvas.width = width
