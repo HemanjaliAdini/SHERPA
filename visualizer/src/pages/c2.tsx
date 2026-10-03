@@ -36,6 +36,10 @@ const C2Map3D = lazy(() =>
 )
 
 type ViewMode = '2d' | '3d'
+// Terrain height exaggeration steps for E; the sector's relief is small (0-167 m)
+const TERRAIN_SCALES = [0, 3, 6, 12]
+const nextTerrainScale = (k: number) =>
+  TERRAIN_SCALES[(TERRAIN_SCALES.indexOf(k) + 1) % TERRAIN_SCALES.length]
 
 const NodeKey = ({ color, label, small }: { color: string; label: string; small?: boolean }) => (
   <div className="mb-1 flex items-center gap-2">
@@ -106,6 +110,7 @@ const KEY_HELP = [
   '+ / - zoom',
   'R reset',
   'V 2D/3D',
+  'E terrain height (3D)',
   '1-9 casualty',
   'Esc clear',
   '/ query',
@@ -128,6 +133,8 @@ export const TC2Page = () => {
   const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [mode, setMode] = useState<ViewMode>('3d')
+  const [terrainScale, setTerrainScale] = useState(TERRAIN_SCALES[2])
+  const cycleTerrain = () => setTerrainScale(nextTerrainScale)
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
   useArrowCamera(mapRef)
@@ -194,6 +201,7 @@ export const TC2Page = () => {
       }
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
       if (e.key === 'v' || e.key === 'V') setMode((m) => (m === '2d' ? '3d' : '2d'))
+      else if (e.key === 'e' || e.key === 'E') setTerrainScale(nextTerrainScale)
       else if (e.key === '+' || e.key === '=') mapRef.current?.zoomIn()
       else if (e.key === '-' || e.key === '_') mapRef.current?.zoomOut()
       else if (e.key === 'r' || e.key === 'R') mapRef.current?.resetView()
