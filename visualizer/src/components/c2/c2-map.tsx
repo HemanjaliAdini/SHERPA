@@ -207,6 +207,8 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     }
   }, [])
 
+
+
   // (Re)draw the graph: every edge between its endpoints, every node at its lat/lon
   useEffect(() => {
     const m = map.current
@@ -277,7 +279,8 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
       marker.on('click', (ev) => {
         L.DomEvent.stopPropagation(ev)
         latest.current.onSelectNode(n.nid)
-        inspect(m, n)
+        if (n.label === 'Junction') inspect(m, n)
+        else m.closePopup()
       })
       marker.addTo(group)
       nodeMarkers.current.set(n.nid, { marker, look })
@@ -361,5 +364,8 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     })
   }
 
-  return <div ref={container} className="c2-map h-full w-full" />
+  return <div className="relative h-full w-full">
+    <div ref={container} className="c2-map h-full w-full" />
+
+  </div>
 })

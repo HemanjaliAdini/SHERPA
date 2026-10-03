@@ -54,6 +54,26 @@ takes about a minute to load; typed questions work as soon as the server is up. 
 `HF_HUB_OFFLINE=1` keeps it fully offline. Questions and their example phrasings are in `scripts/voice_query.py`;
 add a phrasing there when a medic's wording is not understood, and run `uv run --extra voice pytest`.
 
+### Casualty radio panel
+
+Click a casualty marker or card to open its radio dropdown over the graph. The map has no speech bubbles.
+Messages show sender → recipient and scenario time: report, medic acknowledgment, recorded triage/priority,
+command dispatch, assigned vehicle movement/pickup, receiving-team reply and handover or onward transfer.
+Each casualty's messages stay readable when you switch cases. Click its title to collapse or expand the conversation, or × to close it.
+History is captured while this page is open; reset starts a new history, and page reload starts a new session.
+
+Medic teams and command are separate stationary graph entities. Existing simulation and routing still move
+vehicles and casualties and choose destinations. Radio text is simulated from graph state; no live radio is connected.
+
+### Entity info boxes
+
+Click a vehicle, medical point, medic team or the command post to open its info box over the map (× or Esc closes it).
+A vehicle shows casualties aboard out of capacity, who it is collecting and where it delivers, fuel or battery
+(`battery_pct`), range left, speed and damage. A medical point shows patients held, casualties on the way, free beds,
+medics available, capabilities, equipment and vehicles waiting there. A medic team shows its casualty or its point;
+command shows the scenario totals. `Vehicle.damage` and `MedicalPoint.equipment` are placeholder seed values in
+`scripts/seed_scenario.py`; the simulator does not change them.
+
 ## Tests
 
 ```bash
@@ -61,6 +81,7 @@ uv run pytest                      # routing, dispatch, simulator (uses a scratc
 
 # Live end to end, with ./run.sh running
 cd visualizer && npx playwright test tests/simulator.spec.ts
+# Or use installed Chrome: PLAYWRIGHT_CHANNEL=chrome npx playwright test tests/simulator.spec.ts
 ```
 
 ## Layout

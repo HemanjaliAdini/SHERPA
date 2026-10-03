@@ -7,6 +7,7 @@ import { Kbd } from './map-controls'
 import { createMission } from './missions'
 import {
   type Candidate,
+  type Plan,
   buildPlan,
   formatMinutes,
   planSelection,
@@ -26,7 +27,7 @@ type Props = {
   now: Date
   /** Route preview to highlight on the map (null clears it) */
   onPreview: (selection: Selection | null) => void
-  onCreated: (missionId: string) => void
+  onCreated: (missionId: string, plan: Plan) => void
   onClose: () => void
 }
 
@@ -145,7 +146,8 @@ export const MissionPlanner = ({
     setCreating(true)
     setError(null)
     try {
-      onCreated(await createMission(graphName, plan.data, now))
+      const confirmedPlan = plan.data
+      onCreated(await createMission(graphName, confirmedPlan, now), confirmedPlan)
     } catch (err) {
       setError(String(err))
     } finally {

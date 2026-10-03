@@ -295,6 +295,10 @@ To settle together. Only 7.8 (event format) blocks the MVP, as part of the simul
       time fields on the C2 planner's (`tasked`, `eta` datetime).
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
+13. **Casualty radio panel (3 Oct).** Selecting a casualty opens one sidebar conversation. Messages show
+    sender, recipient and scenario timestamp for report, medic response, recorded triage priority, dispatch,
+    vehicle pickup/transport and receiving-team handover. Per-casualty history is captured while the page is open,
+    preserved when switching cases, and cleared on reset. Map speech bubbles are no longer rendered.
 
 ---
 
@@ -368,6 +372,8 @@ the extra scenarios in `docs/SCENARIOS.md`.
 **CUT LINE: freeze the core by Saturday 22:00** (the venue closes at 22:30)
 
 **Layer 5: Bonus, only if layers 0–4 work**
+- ✅ Automatic scene communication: separate field/receiving Medic teams, command, vehicle and casualty
+  markers produce short speech bubbles from scenario state changes, without requiring a click.
 - Messages requesting more UGVs or medics.
 - Vision or RF from drones and phones.
 - 🟡 Plain-language questions, spoken or typed, on the C2 page (`scripts/voice_query.py`, `voice_server.py`):

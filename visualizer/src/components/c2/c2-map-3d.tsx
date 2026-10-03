@@ -412,6 +412,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
   ]
   const ground = (n: GraphNode) => lift(n.lon, n.lat)
   const placed = [terrainOn, terrainScale, heightAt]
+
+
   const layers = [
     terrainOn &&
       new TerrainLayer({
@@ -666,6 +668,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       return
     }
     onSelectNode(n.nid)
+    if (n.label !== 'Junction') { setInspector(null); return }
     inspectNode(graph, n, graphName, change, (html) => {
       if (token === inspectToken.current) setInspector(html)
     })
@@ -700,6 +703,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
             : null
         }
       />
+
       <div className="absolute top-[88px] right-3 z-[1000] flex gap-1.5 text-xs">
         <button
           type="button"

@@ -61,6 +61,8 @@ if ! curl -s -m 5 -X POST "http://localhost:$API_PORT/query" -d "LIST GRAPH" | g
   scripts/build_graph.sh "$GRAPH"
 fi
 
+uv run python scripts/scene_entities.py "$GRAPH"
+
 # Simulator: follows the SimControl node (play/pause on the C2 screen), writes one commit per scenario minute
 uv run python scripts/simulate.py "$GRAPH" &
 
