@@ -74,7 +74,8 @@ const BEARING = -15
 const VILLAGE_LABEL_MIN_ZOOM = 11
 const DIMMED = 0.12
 const ORBIT_DEG_PER_SEC = 6
-// Double-tap Shift+Up: tilt smoothly to look straight down, keeping position, zoom and bearing
+// Double-tap Shift+Up: tilt smoothly to look straight down, keeping position, zoom and bearing;
+// double-tap Shift+Down returns to the view from before
 const TOP_DOWN_MS = 600
 const TOP_DOWN_INTERPOLATOR = new LinearInterpolator(['pitch'])
 function rgba(color: string, alpha = 1): [number, number, number, number] {
@@ -146,6 +147,7 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
   const [inspector, setInspector] = useState<string | null>(null)
   const inspectToken = useRef(0)
   const flying = useRef(false)
+  const beforeTopDown = useRef<ViewState | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -286,12 +288,37 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
     rotate: (degrees) => turn(degrees, 0),
     tilt: (degrees) => turn(0, degrees),
     topDown: () =>
+      setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => {
+        // Remember where we were looking, so double-tap Shift+Down can come back to it
+        if ((v.pitch ?? 0) > 0) beforeTopDown.current = v
+        return {
+          ...v,
+          pitch: 0,
+          transitionDuration: TOP_DOWN_MS,
+          transitionInterpolator: TOP_DOWN_INTERPOLATOR,
+        }
+      }),
+    restoreView: () => {
+      const saved = beforeTopDown.current
+      beforeTopDown.current = null
       setViewState(({ transitionDuration, transitionInterpolator, onTransitionEnd, ...v }) => ({
         ...v,
-        pitch: 0,
+        // Without a saved view, just tilt back to the standard angle where we are
+        ...(saved
+          ? {
+              longitude: saved.longitude,
+              latitude: saved.latitude,
+              zoom: saved.zoom,
+              bearing: saved.bearing,
+              pitch: saved.pitch,
+            }
+          : { pitch: PITCH }),
         transitionDuration: TOP_DOWN_MS,
-        transitionInterpolator: TOP_DOWN_INTERPOLATOR,
-      })),
+        transitionInterpolator: saved
+          ? new FlyToInterpolator({ speed: 1.4 })
+          : TOP_DOWN_INTERPOLATOR,
+      }))
+    },
   }))
 
   // Fly to the selection on request, so a query result is brought into view

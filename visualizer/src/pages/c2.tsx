@@ -107,7 +107,7 @@ const Legend = () => (
 const KEY_HELP = [
   'Arrows move',
   'Shift+arrows turn and tilt (3D)',
-  'Shift+Up twice top view',
+  'Shift+Up twice top view, Shift+Down twice back',
   '+ / - zoom',
   'R reset',
   'V 2D/3D',

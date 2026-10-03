@@ -8,7 +8,8 @@ const PAN_PX_PER_S = 700
 export const TURN_DEG_PER_S = 70
 const TILT_DEG_PER_S = 45
 const RAMP_S = 0.35
-// Two Shift+Up presses this close together go to the top-down view instead of tilting
+// Two Shift+Up presses this close together go to the top-down view, two Shift+Down presses back
+// to the view from before, instead of tilting
 const DOUBLE_TAP_MS = 350
 
 const ARROWS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'])
@@ -19,7 +20,8 @@ const isTyping = (target: EventTarget | null) =>
 
 /**
  * Arrow keys move the map; with Shift they turn (left/right) and tilt (up/down) the camera.
- * Double-tapping Shift+Up swings the 3D camera to look straight down.
+ * Double-tapping Shift+Up swings the 3D camera to look straight down; double-tapping Shift+Down
+ * returns to where it was looking before.
  */
 export function useArrowCamera(mapRef: RefObject<C2MapHandle | null>) {
   useEffect(() => {
@@ -28,7 +30,7 @@ export function useArrowCamera(mapRef: RefObject<C2MapHandle | null>) {
     let frame = 0
     let last = 0
     let heldFor = 0
-    let lastShiftUp = Number.NEGATIVE_INFINITY
+    const lastShiftTap: Record<string, number> = {}
 
     const tick = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000) // cap so a stalled frame does not jump
@@ -51,15 +53,16 @@ export function useArrowCamera(mapRef: RefObject<C2MapHandle | null>) {
       shift = e.shiftKey
       if (!ARROWS.has(e.key) || isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
       e.preventDefault()
-      if (e.key === 'ArrowUp' && e.shiftKey && !e.repeat) {
+      if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.shiftKey && !e.repeat) {
         const now = performance.now()
-        if (now - lastShiftUp < DOUBLE_TAP_MS) {
-          lastShiftUp = Number.NEGATIVE_INFINITY
-          held.delete('ArrowUp')
-          mapRef.current?.topDown()
+        if (now - (lastShiftTap[e.key] ?? Number.NEGATIVE_INFINITY) < DOUBLE_TAP_MS) {
+          delete lastShiftTap[e.key]
+          held.delete(e.key)
+          if (e.key === 'ArrowUp') mapRef.current?.topDown()
+          else mapRef.current?.restoreView()
           return
         }
-        lastShiftUp = now
+        lastShiftTap[e.key] = now
       }
       held.add(e.key)
       if (!frame) {
