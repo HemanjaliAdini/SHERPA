@@ -11,10 +11,27 @@ export type Casualty = {
   /** junction the casualty is NEAR, and how far off the road network it is */
   junction: number | null
   offRoadMetres: number | null
-  /** MIST report the medic triages from */
-  mist: { mechanism: string; injuries: string; signs: string; treatment: string }
   /** left on the road in a vehicle that stopped (events.battery_depleted): dispatched first */
   stranded: boolean
+  /** sensor fusion's suggestion (scripts/events.py refuse, PRD section 5): the medic accepts or changes it */
+  recommendation: Recommendation | null
+  /** newest drone photo of this casualty, a path under visualizer/public */
+  photo: string
+}
+
+export type Recommendation = {
+  /** T1, T2, T3, Expectant; empty: doctrine does not rank this, the medic decides */
+  triage: string
+  rank: number | null
+  /** combined confidence of the sources behind it (0 to 1); it informs, never decides */
+  confidence: number | null
+  reason: string
+  /** per Finding: 'bleeding_severe: app yes, drone yes 0.50' */
+  evidence: string[]
+  /** Findings where one source said yes and another no */
+  disagree: string[]
+  /** litter or ambulatory, from the drone's posture or the app */
+  mobility: string
 }
 
 export type Vehicle = {
@@ -69,8 +86,13 @@ const str = (v: unknown) => (v === null || v === undefined ? '' : String(v))
 
 const CASUALTIES =
   'MATCH (c:Casualty) OPTIONAL MATCH (c)-[n:NEAR]->(j) RETURN c, c.id, c.triage_category, ' +
-  'c.mobility, c.status, c.time_of_injury, n.distance_m, j, c.mist_mechanism, c.mist_injuries, ' +
-  'c.mist_signs, c.mist_treatment, c.stranded_by'
+  'c.mobility, c.status, c.time_of_injury, n.distance_m, j, c.stranded_by, ' +
+  'c.recommended_category, c.recommended_rank, ' +
+  'c.recommendation_confidence, c.recommendation_reason, c.recommendation_evidence, c.recommendation_disagree, ' +
+  'c.recommended_mobility'
+// The drone photos behind the fusion; none on a graph without observations
+const PHOTOS =
+  'MATCH (o:Observation)-[:ABOUT]->(c:Casualty) WHERE o.media IS NOT NULL RETURN c.id, o.media, o.at'
 const VEHICLES =
   'MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN v, v.id, v.type, v.status, ' +
   'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh, v.damage, v.base, v.arrives_at, v.arrive_point, v.request_reason'
@@ -89,6 +111,12 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
     [CASUALTIES, VEHICLES, FACILITIES].map((query) => executeCypherQuery({ graph, change, query }))
   )
   const assignmentData = await executeCypherQuery({ graph, change, query: ASSIGNMENTS })
+  const photoData = await executeCypherQuery({ graph, change, query: PHOTOS }).catch(() => [])
+  const photos = new Map<string, [string, string]>() // casualty id -> [observed at, path], newest
+  for (const r of rowsOf(photoData)) {
+    const known = photos.get(str(r[0]))
+    if (!known || str(r[2]) > known[0]) photos.set(str(r[0]), [str(r[2]), str(r[1])])
+  }
   const assignments: RadioAssignment[] = rowsOf(assignmentData).map((r) => ({
     id: str(r[0]), status: str(r[1]), casualtyId: str(r[2]), casualtyStatus: str(r[3]),
     casualtyLat: num(r[4]), casualtyLon: num(r[5]), vehicleId: str(r[6]), vehicleLat: num(r[7]), vehicleLon: num(r[8]), destinationId: str(r[9]),
@@ -104,8 +132,9 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       injuredAt: r[5] ? new Date(String(r[5])) : null,
       offRoadMetres: r[6] === null || r[6] === undefined ? null : Number(r[6]),
       junction: nodeId(r[7]),
-      mist: { mechanism: str(r[8]), injuries: str(r[9]), signs: str(r[10]), treatment: str(r[11]) },
-      stranded: Boolean(r[12]),
+      stranded: Boolean(r[8]),
+      recommendation: r[12] === null || r[12] === undefined ? null : recommendationOf(r),
+      photo: photos.get(str(r[1]))?.[1] ?? '',
     })),
     vehicles: rowsOf(v).map((r) => ({
       nid: Number(r[0]),
@@ -140,17 +169,33 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
   }
 }
 
+// Fusion fields of a casualty row (from index 9). The reason is always written once a source has reported.
+const recommendationOf = (r: unknown[]): Recommendation => ({
+  triage: str(r[9]),
+  rank: r[10] === null || r[10] === undefined ? null : Number(r[10]),
+  confidence: r[11] === null || r[11] === undefined ? null : Number(r[11]),
+  reason: str(r[12]),
+  evidence: str(r[13]).split(' | ').filter(Boolean),
+  disagree: str(r[14]).split(', ').filter(Boolean),
+  mobility: str(r[15]),
+})
+
 // Untriaged reports first (the medic's work), then the stranded (dispatch takes them first, as in
 // scripts/routing.py), then by category; the dead last
 const TRIAGE_ORDER: Record<string, number> = { '': -2, T1: 0, T2: 1, T3: 2, T4: 3, DEAD: 4 }
 const rank = (c: Casualty) => (c.triage && c.stranded ? -1 : (TRIAGE_ORDER[c.triage] ?? 9))
+// Among the untriaged, the most urgent recommendation first (a casualty with none after those with one)
+const suggested = (c: Casualty) => (c.triage ? 0 : (c.recommendation?.rank ?? 9))
 
 /** Casualties still needing evacuation: most urgent first, then longest waiting first. */
 export function activeQueue(casualties: Casualty[]): Casualty[] {
   return casualties
     .filter((c) => c.status !== 'delivered')
     .sort(
-      (a, b) => rank(a) - rank(b) || (a.injuredAt?.getTime() ?? 0) - (b.injuredAt?.getTime() ?? 0)
+      (a, b) =>
+        rank(a) - rank(b) ||
+        suggested(a) - suggested(b) ||
+        (a.injuredAt?.getTime() ?? 0) - (b.injuredAt?.getTime() ?? 0)
     )
 }
 

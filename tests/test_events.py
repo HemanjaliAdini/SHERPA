@@ -22,6 +22,12 @@ def add_event(client, eid, minutes_from_now, type_, payload, source="script"):
     client.query("COMMIT")
 
 
+def opening_applied():
+    """After a reset the script's events are pending, except the 05:30 reports, fused before Play (apply_opening)."""
+    from seed_scenario import SCENARIO_START
+    return {e["id"]: "applied" if e["at"] <= SCENARIO_START else "pending" for e in EVENTS}
+
+
 def no_script(client):
     """Only the events a test adds."""
     client.query("MATCH (e:Event) DETACH DELETE e")
@@ -72,7 +78,8 @@ def test_seed_and_reset_put_the_demo_script_events_pending(fresh):
     found = {r["id"]: r for r in rows(fresh, "MATCH (e:Event) RETURN e.id AS id, e.type AS type, e.status AS s, "
                                              "e.source AS src")}
     assert set(found) == {e["id"] for e in EVENTS}
-    assert all(e["s"] == "pending" and e["src"] == "script" for e in found.values())
+    assert {i: e["s"] for i, e in found.items()} == opening_applied()
+    assert all(e["src"] == "script" for e in found.values())
 
 
 def test_reset_of_a_plain_graph_brings_no_scripted_events(fresh):
@@ -203,7 +210,7 @@ def test_reset_reopens_the_road_and_puts_the_script_back(fresh):
     in_change(fresh, reset_writes)
     assert all(r["status"] == "open" and r["by"] is None for r in way_status(fresh, BRIDGE))
     events = {r["id"]: r["s"] for r in rows(fresh, "MATCH (e:Event) RETURN e.id AS id, e.status AS s")}
-    assert events == {e["id"]: "pending" for e in EVENTS}  # live one gone, scripted ones pending
+    assert events == opening_applied()  # live one gone, scripted ones pending (the 05:30 reports applied)
     assert one(fresh, "MATCH (:Event)-[r:AFFECTS]->() RETURN count(r) AS n")["n"] == 0
 
 
@@ -223,7 +230,7 @@ def test_a_reported_casualty_appears_untriaged_at_its_minute_and_reset_removes_i
     applied = one(fresh, "MATCH (e:Event {id: 'EV-T'}) RETURN e.applied_at AS at, e.summary AS summary, e.lat AS lat")
     assert (cas["s"], cas["ev"], cas["mech"]) == ("reported", "EV-T", "Drone-dropped grenade")  # the medic triages
     assert cas["d"] < 200 and cas["injured"] == applied["at"]  # no time of injury given: the event's minute
-    assert applied["summary"] == "New casualty CAS-T: Drone-dropped grenade" and applied["lat"] == NEW_CASUALTY["lat"]
+    assert applied["summary"] == "New casualty CAS-T" and applied["lat"] == NEW_CASUALTY["lat"]
     in_change(fresh, reset_writes)
     assert one(fresh, "MATCH (x:Casualty {id: 'CAS-T'}) RETURN count(x) AS n")["n"] == 0
 

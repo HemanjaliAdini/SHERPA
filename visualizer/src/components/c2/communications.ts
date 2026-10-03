@@ -25,7 +25,8 @@ export function communicationEvents(graph: GeoGraph, scenario: Scenario): Commun
       events.push({
         key: `report:${casualty.id}`,
         speaker: casualty.id,
-        text: `Soldier with ${casualty.id}, report: ${casualty.mist.injuries || 'injury details not recorded'}. ${casualty.mist.signs || ''}`,
+        // What the drone and the soldier's app reported (sensor fusion), not a MIST report (PRD 6.19)
+        text: `Soldier with ${casualty.id}, report: ${casualty.recommendation?.evidence.join('; ').replace(/_/g, ' ') || 'casualty located, no findings yet'}.`,
       })
       events.push({
         key: `assessment:${casualty.id}`,

@@ -135,7 +135,7 @@ def casualty_reported(client: TuringDB, event_id: str, payload: dict, now: datet
                  f"CREATE (c)-[:NEAR {props(distance_m=distance)}]->(j)")
     place(client, event_id, lat, lon)
     mark(client, event_id, [junction])
-    return f"New casualty {cid}" + (f": {payload['mist_mechanism']}" if payload.get("mist_mechanism") else "")
+    return f"New casualty {cid}"  # what is known about it comes from the drone and the app (PRD 6.19), not MIST
 
 
 def stopping_vehicle(client: TuringDB, payload: dict) -> str:
@@ -223,12 +223,158 @@ def road_reopened(client: TuringDB, event_id: str, payload: dict, now: datetime)
     return f"{reason}: road open again" + (f"; {', '.join(resumed)} back on the road" if resumed else "")
 
 
+# --- sensor fusion (PRD section 5, "Sensor fusion"; task A2c) -------------------------------------------------
+
+ASSOCIATE_M = 50.0  # an observation with no casualty_id belongs to the nearest casualty this close, else a new one
+SOURCE_NAME = {"drone": "Drone", "app": "Soldier's app"}
+
+
+def load_doctrine(client: TuringDB):
+    """Noo's triage rules from the graph (seed_doctrine.py), with the engine's queries (DECISION-SPEC.md Q1, Q11,
+    Q2): only links that cite the TCCC handbook; an injury with two categories keeps the most urgent."""
+    from fusion import TCCC, Doctrine
+
+    links = tuple((r["f"], r["i"]) for r in rows(client, (
+        "MATCH (f:Finding)-[r:INDICATES]->(i:Injury) "
+        f"WHERE r.sources_json CONTAINS {lit(TCCC)} RETURN f.key AS f, i.key AS i")))
+    members: dict = {}
+    injury_of: dict = {}
+    for r in rows(client, (
+        "MATCH (f:Finding)-[:PART_OF]->(c:Condition)-[r:INDICATES]->(i:Injury) "
+        f"WHERE r.sources_json CONTAINS {lit(TCCC)} RETURN c.key AS c, f.key AS f, i.key AS i")):
+        members.setdefault(r["c"], set()).add(r["f"])
+        injury_of[r["c"]] = r["i"]
+    categories: dict = {}
+    for r in rows(client, "MATCH (i:Injury)-[:TRIAGES_TO]->(t:TriageCategory) "
+                          "RETURN i.key AS i, t.key AS t, t.rank AS rank"):
+        if r["i"] not in categories or int(r["rank"]) < categories[r["i"]][1]:
+            categories[r["i"]] = (r["t"], int(r["rank"]))
+    return Doctrine(links, tuple((frozenset(m), injury_of[c]) for c, m in members.items()), categories)
+
+
+def observed_casualty(client: TuringDB, event_id: str, payload: dict, lat: float, lon: float, now: datetime) -> str:
+    """Association, simple version (PRD 6.15): the given casualty_id, else the nearest casualty within ASSOCIATE_M,
+    else a new untriaged casualty there (seen twice, counted once)."""
+    from build_roads import haversine_m
+    from seed_scenario import snap
+
+    if payload.get("casualty_id"):
+        cid = str(payload["casualty_id"])
+        if rows(client, f"MATCH (c:Casualty {{id: {lit(cid)}}}) RETURN count(c) AS n")[0]["n"] == 0:
+            raise EventError(f"no casualty {cid}")
+        return cid
+    near = sorted((haversine_m((lat, lon), (c["lat"], c["lon"])), c["id"]) for c in rows(
+        client, "MATCH (c:Casualty) WHERE c.status <> 'delivered' AND c.status <> 'dead' "
+                "RETURN c.id AS id, c.lat AS lat, c.lon AS lon"))
+    if near and near[0][0] <= ASSOCIATE_M:
+        return near[0][1]
+    cid = f"CAS-{int(rows(client, 'MATCH (c:Casualty) RETURN count(c) AS n')[0]['n']) + 1}"
+    client.query("CREATE (:Casualty " + props(id=lit(cid), lat=lat, lon=lon, time_of_injury=cypher_time(now),
+                                              status=lit("reported"), event_id=lit(event_id)) + ")")
+    client.query("COMMIT")  # invisible to the NEAR match below until committed
+    junction, distance = snap(client, lat, lon)
+    client.query(f"MATCH (c:Casualty {{id: {lit(cid)}}}) MATCH (j) WHERE j = {junction} "
+                 f"CREATE (c)-[:NEAR {props(distance_m=distance)}]->(j)")
+    place(client, event_id, lat, lon)  # a casualty nobody had reported: an alert on the map
+    mark(client, event_id, [junction])
+    return cid
+
+
+def refuse(client: TuringDB, cid: str):
+    """Fuse every observation of one casualty again and store the recommendation on it (PRD section 5)."""
+    from fusion import MOBILITY, Observation, fuse, recommend
+
+    cas = f"MATCH (c:Casualty {{id: {lit(cid)}}})"
+    observations = [
+        Observation(o["source"], o["finding"], o["answer"], o["at"].to_pydatetime().timestamp(),
+                    o["confidence"] if o["confidence"] == o["confidence"] else None)  # NaN: no confidence (app)
+        for o in rows(client, f"MATCH (o:Observation)-[:ABOUT]->(c:Casualty {{id: {lit(cid)}}}) "
+                              "RETURN o.source AS source, o.finding AS finding, o.answer AS answer, o.at AS at, "
+                              "o.confidence AS confidence")
+    ]
+    fused = fuse(observations)
+    rec = recommend(fused, load_doctrine(client))
+    client.query(f"{cas}-[h:HAS_FINDING]->() DELETE h")
+    for finding, f in fused.items():
+        if finding == MOBILITY:
+            continue
+        edge = {"answer": lit(f.answer), "sources": lit(evidence(f)), "disagree": lit(f.disagree)}
+        if f.confidence is not None:
+            edge["confidence"] = round(f.confidence, 3)
+        client.query(f"{cas} MATCH (f:Finding {{key: {lit(finding)}}}) CREATE (c)-[:HAS_FINDING {props(**edge)}]->(f)")
+    walks = fused.get(MOBILITY)
+    fields = {
+        "recommended_category": lit(rec.triage) if rec.triage else None,
+        "recommended_rank": rec.rank,
+        "recommendation_confidence": round(rec.confidence, 3) if rec.confidence is not None else None,
+        "recommendation_reason": lit("; ".join(rec.reasons)),
+        "recommendation_evidence": lit(" | ".join(f"{k}: {evidence(v)}" for k, v in sorted(fused.items()))),
+        "recommendation_disagree": lit(", ".join(rec.disagree)) if rec.disagree else None,
+        "recommended_mobility": (lit({"yes": "ambulatory", "no": "litter"}[walks.answer])
+                                 if walks and walks.answer in ("yes", "no") else None),
+    }
+    sets = [f"c.{k} = {v}" for k, v in fields.items() if v is not None]
+    removes = [f"c.{k}" for k, v in fields.items() if v is None]
+    client.query(f"{cas} SET " + ", ".join(sets))
+    if removes:
+        client.query(f"{cas} REMOVE " + ", ".join(removes))
+    return rec
+
+
+def evidence(f) -> str:
+    """'drone yes 0.50, app yes' for the screen."""
+    return ", ".join(f"{s} {a}" + (f" {c:.2f}" if s != "app" else "") for s, a, c in f.sources)
+
+
+def observation(client: TuringDB, event_id: str, payload: dict, now: datetime) -> str:
+    """A source's answer about one doctrine Finding (or `mobility`): associate it to a casualty, store it, fuse that
+    casualty's observations again and update its recommendation. The medic still sets the triage (PRD 6.13)."""
+    source, finding, answer = str(payload["source"]), str(payload["finding"]), str(payload["answer"])
+    if answer not in ("yes", "no", "unsure"):
+        raise EventError(f"answer must be yes, no or unsure, not {answer!r}")
+    lat, lon = float(payload["lat"]), float(payload["lon"])
+    cid = observed_casualty(client, event_id, payload, lat, lon, now)
+    seen = f"datetime({lit(payload['observed_at'])})" if payload.get("observed_at") else cypher_time(now)
+    o = {"id": lit(event_id), "at": seen, "received_at": cypher_time(now), "source": lit(source),
+         "finding": lit(finding), "answer": lit(answer), "lat": lat, "lon": lon, "event_id": lit(event_id)}
+    if payload.get("confidence") is not None and source != "app":
+        o["confidence"] = float(payload["confidence"])
+    if payload.get("media"):
+        o["media"] = lit(str(payload["media"]))
+    client.query(f"MATCH (c:Casualty {{id: {lit(cid)}}}) CREATE (o:Observation {props(**o)})-[:ABOUT]->(c)")
+    client.query("COMMIT")  # the observation is invisible to the OF match and to refuse() until committed
+    client.query(f"MATCH (o:Observation {{id: {lit(event_id)}}}) MATCH (f:Finding {{key: {lit(finding)}}}) "
+                 "CREATE (o)-[:OF]->(f)")
+    rec = refuse(client, cid)
+    said = f"{finding} {answer}" + (f" {o['confidence']:.2f}" if "confidence" in o else "")
+    result = (f"{rec.triage} recommended, {rec.confidence:.2f}" if rec.triage else "no recommendation") + (
+        f"; sources disagree on {', '.join(rec.disagree)}" if rec.disagree else "")
+    return f"{SOURCE_NAME.get(source, source)} on {cid}: {said}. {result}"
+
+
+def clear_fusion(client: TuringDB) -> None:
+    """No observations and no recommendations on any casualty (reset, and tests that start without the script)."""
+    client.query("MATCH (o:Observation) DETACH DELETE o")
+    client.query("MATCH (:Casualty)-[h:HAS_FINDING]->() DELETE h")
+    client.query("MATCH (c:Casualty) REMOVE c.recommended_category, c.recommended_rank, c.recommendation_confidence, "
+                 "c.recommendation_reason, c.recommendation_evidence, c.recommendation_disagree, c.recommended_mobility")
+
+
+def apply_opening(client: TuringDB) -> list[str]:
+    """Events at the scenario's start (the first reports, 05:30) are applied before Play, so the medic triages the
+    opening batch with their recommendations (PRD 8.1, option C). Inside the caller's change."""
+    from seed_scenario import SCENARIO_START
+
+    return apply_due(client, datetime.fromisoformat(SCENARIO_START.replace("Z", "+00:00")))
+
+
 HANDLERS = {
     "road_closed": road_closed,
     "road_delayed": road_delayed,
     "road_reopened": road_reopened,
     "casualty_reported": casualty_reported,
     "battery_depleted": battery_depleted,
+    "observation": observation,
 }
 
 
@@ -398,6 +544,7 @@ def reset_events(client: TuringDB) -> None:
                  "SET r.delay_factor = 1.0 REMOVE r.delayed_by")
     client.query("MATCH (v:Vehicle) WHERE v.disabled_by IS NOT NULL SET v.status = 'idle' REMOVE v.disabled_by")
     client.query("MATCH (c:Casualty) WHERE c.stranded_by IS NOT NULL REMOVE c.stranded_by, c.stranded_from")
+    clear_fusion(client)
     client.query("MATCH (n) WHERE n.event_id IS NOT NULL DETACH DELETE n")
     client.query("MATCH (e:Event) DETACH DELETE e")
     scripted = rows(client, "MATCH (s:SimControl) RETURN s.script AS script")

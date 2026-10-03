@@ -49,6 +49,7 @@ from turingdb import TuringDB  # noqa: E402
 
 from routing import read_clock, rows  # noqa: E402
 from seed_scenario import VEHICLES  # noqa: E402
+from events import clear_fusion  # noqa: E402
 from simulate import in_change, loop_once, reset_writes, tick_writes  # noqa: E402
 
 GRAPH = "simtest"
@@ -77,6 +78,7 @@ def fresh(db):
     retuned script must not change these results); whatever a test leaves in an open change is thrown away."""
     in_change(db, reset_writes)
     in_change(db, lambda c: c.query("MATCH (e:Event) DETACH DELETE e"))
+    in_change(db, clear_fusion)  # what the script's 05:30 reports fused at the reset (events.apply_opening)
     yield db
     db.checkout()
 

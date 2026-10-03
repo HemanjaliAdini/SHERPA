@@ -300,6 +300,9 @@ def reset_writes(client: TuringDB) -> None:
     client.query(f"MATCH (k:Clock) SET k.now = datetime({lit(SCENARIO_START)}), "
                  f"k.run = {int(run if run == run and run is not None else 0) + 1}")
     client.query("MATCH (s:SimControl) SET s.running = false, s.reset = false")
+    client.query("COMMIT")  # casualties back at their start before the opening reports associate to them
+    from events import apply_opening
+    apply_opening(client)  # the 05:30 reports of a demo graph, so the medic triages the opening batch with them
 
 
 def loop_once(client: TuringDB) -> float:

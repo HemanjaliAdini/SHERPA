@@ -58,6 +58,7 @@ const TITLE: Record<string, string> = {
   road_reopened: 'Road reopened',
   casualty_reported: 'New casualty',
   battery_depleted: 'Battery depleted',
+  observation: 'Sensor report',
 }
 
 /** Has happened: applied, or applied and since resolved */
@@ -81,7 +82,7 @@ export function describeEvent(e: SimEvent): string {
   if (e.type === 'road_delayed')
     return `Road slowed x${str(p.delay_factor)}${reason || ` (${way})`}`
   if (e.type === 'casualty_reported')
-    return `New casualty ${str(p.id)}${p.mist_mechanism ? `: ${p.mist_mechanism}` : ''}`
+    return `New casualty ${str(p.id)}`
   if (e.type === 'battery_depleted') {
     const who =
       str(p.vehicle_id) || `a ${str(p.vehicle_type).toUpperCase() || 'vehicle'} on a mission`

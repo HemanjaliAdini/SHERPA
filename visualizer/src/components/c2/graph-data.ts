@@ -57,7 +57,26 @@ const NODES_QUERY =
   'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, n.status, ' +
   'n.progress_m, n.stranded_by'
 // Simulator bookkeeping nodes have no place on the map
-const HIDDEN_LABELS = new Set(['Clock', 'SimControl'])
+// Not on the map: the simulator's control nodes, the sensor reports, and Noo's doctrine graph (rules, no place)
+const HIDDEN_LABELS = new Set([
+  'Clock',
+  'SimControl',
+  'Observation',
+  'Finding',
+  'Injury',
+  'TriageCategory',
+  'Condition',
+  'Intervention',
+  'StopRule',
+  'KitItem',
+  'Section',
+  'EvacPriority',
+  'Capability',
+  'Destination',
+  'ProviderTier',
+  'Phase',
+  'Loadout',
+])
 // Missions no longer under way are left off the map; events appear once the simulator applies them
 const hiddenNode = (label: string, status: unknown) =>
   HIDDEN_LABELS.has(label) ||

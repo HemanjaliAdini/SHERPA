@@ -11,7 +11,7 @@ function world(status: string, triage: string, mission = true) {
   const assignment = node(4, 'M-1', 'Mission', 'active')
   const graph = { nodes: new Map([casualty, vehicle, facility, ...(mission ? [assignment] : [])].map((n) => [n.nid, n])),
     edges: mission ? ['USES', 'PICKS_UP', 'DELIVERS_TO'].map((type, i) => ({ src: 4, dst: [2, 1, 3][i], type })) : [] } as unknown as GeoGraph
-  const scenario = { casualties: [{ nid: 1, id: 'CAS-2', triage, status, mobility: 'litter', mist: { injuries: 'Recorded injury' } }],
+  const scenario = { casualties: [{ nid: 1, id: 'CAS-2', triage, status, mobility: 'litter', recommendation: { evidence: ['bleeding_severe: app yes'] } }],
     vehicles: [], facilities: [{ id: 'R1-A', state: 'operational', medics: 3 }] } as unknown as Scenario
   return { graph, scenario }
 }
@@ -19,7 +19,7 @@ test('untriaged reports go from the soldier at the casualty to the medical coord
   const { graph, scenario } = world('reported', '', false)
   const events = communicationEvents(graph, scenario)
   expect(events[0].speaker).toBe('CAS-2')
-  expect(events[0].text).toContain('Recorded injury')
+  expect(events[0].text).toContain('bleeding severe: app yes')
   expect(events[1].speaker).toBe('MED-R1-A')
   expect(events[1].text).toContain('Triage pending')
 })

@@ -11,6 +11,6 @@ DEMO="${2:-}"
 [ -f data/osm/roads.json ] || { echo "data/osm/roads.json missing: run scripts/fetch_osm.py first" >&2; exit 1; }
 uv run python scripts/build_roads.py
 uv run python -c "from turingdb import TuringDB; TuringDB(host='http://localhost:6666').query(\"LOAD PARQUET 'evac_roads' AS $GRAPH\")"
-uv run python scripts/seed_scenario.py "$GRAPH" $DEMO
-uv run python scripts/seed_doctrine.py "$GRAPH"   # Noo's TCCC doctrine graph, read-only (PRD A2a)
+uv run python scripts/seed_doctrine.py "$GRAPH"   # Noo's TCCC doctrine graph, read-only (PRD A2a); before the
+uv run python scripts/seed_scenario.py "$GRAPH" $DEMO   # scenario, whose opening reports are fused with it
 echo "graph '$GRAPH' ready. Plan missions with: uv run python scripts/routing.py plan $GRAPH"

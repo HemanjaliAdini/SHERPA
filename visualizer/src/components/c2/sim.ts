@@ -5,7 +5,7 @@ import { rowsOf } from './selection'
 
 export type SimState = { now: Date; running: boolean; speed: number; resetting: boolean }
 
-export const SPEEDS = [0.5, 1, 2, 5] // scenario minutes per real second
+export const SPEEDS = [0.5, 0.75, 1, 2, 5] // scenario minutes per real second; 0.75 for the demo
 export const TRIAGE_CATEGORIES = ['T1', 'T2', 'T3', 'DEAD'] as const
 export const MOBILITIES = ['litter', 'ambulatory'] as const
 

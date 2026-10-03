@@ -62,8 +62,8 @@ as it is now.
 
 ### What the system does
 
-1. **Casualties arrive with their information already collected,** as a MIST/MISTAT report or with what is needed
-   for a triage decision. Drones and sensors come later. Starting point: there are X casualties with this information.
+1. **Casualties arrive with their information already collected,** from the drone and the soldier's triage app
+   (sensor fusion, section 5). No MIST report is shown (6.19).
 2. **The medic decides only clinical matters:** triage category and mobility (walking or stretcher), from the report.
 3. **The system decides all logistics:** which vehicle goes, the pickup order, which medical point and which route.
    If nothing can take a casualty, it says so ("no resource available").
@@ -509,6 +509,11 @@ Each one: what we chose and why. Do not reopen without a new fact.
     invented. MITT (the NHS Major Incident Triage Tool, section 3) sends walking casualties to T3 after catastrophic
     haemorrhage. It fills the gap left by the doctrine, which never reaches Minimal, and uses `mobility`, which the
     drone (SAR Detection postures) and the app give.
+19. **The screen shows only what the drone and the soldier's app report, no MIST report** (3 Oct). It is the
+    realistic case: nobody writes a MIST report at the point of injury; the drone and the app give findings. The MIST
+    fields stay in the seed and the scenario (unused by the screen; voice may still read them). The demo has no
+    scripted disagreement between drone and app. *Consequence:* on the plain graph `evac` (no script, no
+    observations) the cards carry no clinical information.
 
 ---
 
@@ -638,11 +643,28 @@ and gets them there, even when everything changes.
    as a voice agent (pitch only). Optional: a voice question ("situation summary") and more
    UGVs (`vehicle_requested`).
 
+**Sensor fusion in the demo** (option C: the opening batch before Play, new information streamed during the run;
+each recommendation matches the tuned `TRIAGE`, so the medic accepts with one click and the run plays the same):
+
+| Time | Event | The medic |
+|---|---|---|
+| 05:30, paused | CAS-1 lying + app "bleeding badly" → T1 0.90 · CAS-2 walking → T3 0.80 (MITT) · CAS-3 lying, drone sees blood 0.70, app "struggling to breathe" → T1 0.90 · CAS-4 walking → T3 0.70 · CAS-5 lying + app "chest, belly or back hurt" → T2 0.90 | accepts all five, Play |
+| 05:38 | CAS-6 reported (EV-1); the drone sees someone lying and bleeding 0.5 ~20 m away, no id → associated to CAS-6 → T1 0.50 | accepts T1 |
+| 05:42 | the app on CAS-6: "bleeding badly? yes" → T1 0.95 (filmed on the real app; simulated here) | — |
+| 05:45 | road cratered (EV-2): missions re-routed | — |
+| 05:50 | CAS-7 reported (EV-3), drone: lying → no recommendation (open fracture is not ranked) | sets T2 |
+| 06:05 | UGV-1's battery dies with CAS-1 on board (EV-5) | — |
+
+Paced for a person to follow (3 Oct): 4 to 10 scenario minutes between moments, played at speed **0.75** (5 to
+13 real seconds apart). CAS-8 (06:02) was dropped: MITT's "walks" is already shown at 05:30, and it crowded the
+battery moment. The scripted disagreement (the app saying CAS-3 does not bleed) was dropped too (6.19): with
+sources disagreeing only the photo can settle it, which distracts from the story; the code still handles it. Checked headless: the battery still strands CAS-1, picked up by UGV-2; all delivered 08:42.
+
 **Scripted now** (`scripts/demo_script.py`, played on graph `evac_demo`; `evac` is the plain scenario). Tuned with
-the triage in its `TRIAGE` (T1: CAS-1, CAS-3, CAS-6; T2: CAS-5, CAS-7; T3: CAS-2, CAS-4, CAS-8). Moment 1's
+the triage in its `TRIAGE` (T1: CAS-1, CAS-3, CAS-6; T2: CAS-5, CAS-7; T3: CAS-2, CAS-4). Moment 1's
 observations and the app come with A2/C1; the script has these:
 
-- **05:38, 05:50, 06:02. New casualties** CAS-6, CAS-7, CAS-8 (`casualty_reported`, EV-1, EV-3, EV-4), untriaged:
+- **05:38, 05:50. New casualties** CAS-6, CAS-7 (`casualty_reported`, EV-1, EV-3), untriaged:
   each appears with an alert; the medic triages it and the system dispatches it.
 - **05:45. Road 1200760570 cratered** (EV-2): three vehicles on their way to pickups (M-1, M-3, M-4) are cancelled
   and dispatched again around it in the same minute.
@@ -651,7 +673,7 @@ observations and the app come with A2/C1; the script has these:
   picks CAS-1 up at 06:15, CCP-C at 06:17, where an ambulance takes over.
 - **06:20. Engineers fill the crater** (EV-6, `road_reopened`): the road is open again.
 - Each event shows as resolved once over: CAS-6 delivered 06:04, CAS-1 picked up 06:15, road reopened 06:20, CAS-7
-  06:48, CAS-8 08:25; everyone is delivered by 08:41.
+  06:48; everyone is delivered by 08:42.
 
 ### 8.2 How we work: everything that happens during a run is an event
 
@@ -705,15 +727,23 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
   `tests/test_fusion.py`: the five cases of the section 5 table (CAS-6 to CAS-10) give the answer, recommendation and confidence listed;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
-- **A2c. The `observation` handler** in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
+- ✅ **A2c. The `observation` handler.** Done: `observation`, `load_doctrine`, `refuse`, `apply_opening` and
+  `clear_fusion` in `scripts/events.py`; the 05:30 reports are fused before Play (seed and Reset of a demo graph);
+  `tests/test_observation.py`. Was: in `scripts/events.py`: association (50 m rule), `Observation` with `ABOUT` and
   `OF`, re-fuse, write `HAS_FINDING` and the `recommended_*` fields. Reset: observations and the casualties they
   created carry `event_id` (generic rule). **Done when:** an `observation` event makes the recommendation appear on
   the casualty at its minute.
-- **A2d. The screen.** `visualizer/src/components/c2/scenario-data.ts` (sort at line 115): untriaged first, by
+- ✅ **A2d. The screen.** Done: `RecommendationBox` in `casualty-queue.tsx` (recommendation, confidence, reason,
+  each source, "sources disagree", the drone photo), the recommended button ringed and mobility preset;
+  untriaged sorted by recommended rank (MARCH order not applied); doctrine and observation nodes hidden on the map.
+  Was: `visualizer/src/components/c2/scenario-data.ts` (sort at line 115): untriaged first, by
   `recommended_rank`, MARCH, time of injury. `casualty-queue.tsx`: recommendation, reasons and source chips on the
   card; triage and mobility buttons preselected. **Done when:** the coordinator accepts a recommendation with one
   click.
-- **A2e. Demo observations** for B1: the drone, app and radio entries of 8.1 as `observation` events, with the
+- ✅ **A2e. Demo observations.** Done: `FUSION` in `scripts/demo_script.py` (OBS-01 to OBS-15, the cases of 8.1),
+  photos cropped from SAR Detection in `visualizer/public/media/sar/`. Played headless end to end: every
+  recommendation as planned, the tuned run unchanged (CAS-1 stranded by the flat battery, all delivered 08:42).
+  Was: for B1: the drone, app and radio entries of 8.1 as `observation` events, with the
   SARD images (option A) under `visualizer/public/media/`.
 - **A2f. Optional, after the freeze items:** option B, a real pretrained detector on drone frames.
 

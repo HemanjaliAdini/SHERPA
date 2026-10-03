@@ -144,16 +144,54 @@ const KEY_HELP = [
 ].join(' \u00b7 ')
 
 // How long a new event's alert stays open and pulsing on the map (at most: a newer event closes it)
-const FRESH_ALERT_MS = 12000
+const FRESH_ALERT_MS = 4000
+// How long a triage just clicked is shown before the graph confirms it (the write takes well under a second)
+const PENDING_TRIAGE_MS = 8000
 const FRESH_BATCH_MS = 500
 // A resolved event's alert stays on the map, green, this long, then goes (the events panel keeps it)
-const RESOLVED_ALERT_MS = 10000
+const RESOLVED_ALERT_MS = 4000
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')
 
+// Right panel width: dragged from its left edge, remembered per browser (a convenience; storage may be blocked)
+const SIDEBAR_KEY = 'c2.sidebar-width'
+const SIDEBAR_DEFAULT = 460
+const SIDEBAR_MIN = 320
+const SIDEBAR_MAX_SHARE = 0.6 // of the window
+
+const storedSidebarWidth = () => {
+  try {
+    return Number(localStorage.getItem(SIDEBAR_KEY)) || SIDEBAR_DEFAULT
+  } catch {
+    return SIDEBAR_DEFAULT
+  }
+}
+
+const clampSidebar = (width: number) =>
+  Math.round(Math.min(Math.max(width, SIDEBAR_MIN), window.innerWidth * SIDEBAR_MAX_SHARE))
+
 export const TC2Page = () => {
+  const [sidebarWidth, setSidebarWidth] = useState(storedSidebarWidth)
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_KEY, String(sidebarWidth))
+    } catch {
+      // private window or blocked storage: the width just is not remembered
+    }
+    window.dispatchEvent(new Event('resize')) // the maps redraw for their new width
+  }, [sidebarWidth])
+  const startSidebarResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    const move = (ev: PointerEvent) => setSidebarWidth(clampSidebar(window.innerWidth - ev.clientX))
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
   const graphName = useScenarioStore((state) => state.graph)
   const change = useScenarioStore((state) => state.change)
   const fixedNow = useScenarioStore((state) => state.now)
@@ -205,7 +243,27 @@ export const TC2Page = () => {
   const focusNode = focusNid === null ? undefined : graph.data?.nodes.get(focusNid)
   const cardNode = focusNode && ENTITY_CARD_LABELS.has(focusNode.label) ? focusNode : undefined
   const radioHistory = useRadioHistory(graph.data, scenario.data, now, graphName)
-  const untriaged = scenario.data?.casualties.filter((c) => c.status === 'reported').length ?? 0
+  // Triage decisions not yet seen in the graph: shown at once and kept over the 1 s refreshes until the write lands
+  // (or PENDING_TRIAGE_MS pass), so a card never jumps back
+  const [pendingTriage, setPendingTriage] = useState(
+    () => new Map<number, { category: string; mobility: string; at: number }>()
+  )
+  const casualties = useMemo(
+    () =>
+      (scenario.data?.casualties ?? []).map((c) => {
+        const p = pendingTriage.get(c.nid)
+        return p && c.triage !== p.category && Date.now() - p.at < PENDING_TRIAGE_MS
+          ? {
+              ...c,
+              triage: p.category,
+              mobility: p.mobility,
+              status: p.category === 'DEAD' ? 'dead' : 'awaiting_pickup',
+            }
+          : c
+      }),
+    [scenario.data, pendingTriage]
+  )
+  const untriaged = casualties.filter((c) => c.status === 'reported').length
   const events = useQuery({
     queryKey: ['c2-events', graphName, change],
     queryFn: () => fetchEvents(graphName, change),
@@ -227,7 +285,7 @@ export const TC2Page = () => {
     busyUntil.current = Date.now() + 6000
     work.then(refreshAll).catch((err) => setNotice(String(err)))
   }
-  const queue = scenario.data ? activeQueue(scenario.data.casualties) : []
+  const queue = activeQueue(casualties)
 
   // Announce each new mission once: which medical point's vehicle is going out, and for whom.
   // Missions already under way when the page opens are not announced.
@@ -372,14 +430,11 @@ export const TC2Page = () => {
     alerts,
   }
 
-  const unplaced = graph.data?.unplaced
-    ? ` \u00b7 ${graph.data.unplaced} nodes without a position`
-    : ''
   const status = graph.isError
     ? 'could not load the graph'
     : graph.isLoading || !graph.data
       ? 'loading graph...'
-      : `${graph.data.nodes.size} nodes \u00b7 ${graph.data.edges.length} edges drawn${unplaced}`
+      : `${graph.data.nodes.size} nodes \u00b7 ${graph.data.edges.length} edges drawn`
 
   return (
     <div className="flex h-full w-full">
@@ -506,7 +561,27 @@ export const TC2Page = () => {
         </div>
       </div>
 
-      <aside className="border-grey-700 bg-grey-900 text-content-primary flex h-full w-[400px] shrink-0 flex-col border-l">
+      <aside
+        className="border-grey-700 bg-grey-900 text-content-primary relative flex h-full shrink-0 flex-col border-l"
+        style={{ width: sidebarWidth }}
+      >
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the casualty panel"
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          title="Drag to resize, double-click to reset"
+          onPointerDown={startSidebarResize}
+          onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT)}
+          onKeyDown={(e) => {
+            const step = e.key === 'ArrowLeft' ? 20 : e.key === 'ArrowRight' ? -20 : 0
+            if (!step) return
+            e.preventDefault()
+            setSidebarWidth((w) => clampSidebar(w + step))
+          }}
+          className="absolute top-0 left-0 z-20 h-full w-2 -translate-x-1/2 cursor-col-resize hover:bg-[#fde047]/40 focus-visible:bg-[#fde047]/60 focus-visible:outline-none"
+        />
         <div className="border-grey-700 flex items-center justify-between border-b px-4 py-2 text-xs">
           <span className="font-mono text-sm font-semibold">{formatClock(now)}</span>
           {sim.data?.resetting ? (
@@ -594,7 +669,12 @@ export const TC2Page = () => {
             onTriage={
               sim.data?.resetting
                 ? undefined
-                : (c, category, mobility) => act(setTriage(graphName, c.nid, category, mobility))
+                : (c, category, mobility) => {
+                    setPendingTriage((m) =>
+                      new Map(m).set(c.nid, { category, mobility, at: Date.now() })
+                    )
+                    act(setTriage(graphName, c.nid, category, mobility))
+                  }
             }
           />
         )}

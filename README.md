@@ -83,6 +83,12 @@ medics available, capabilities, equipment and vehicles waiting there. A medic te
 command shows the scenario totals. `Vehicle.damage` and `MedicalPoint.equipment` are placeholder seed values in
 `scripts/seed_scenario.py`; the simulator does not change them.
 
+### Drone photos
+
+`visualizer/public/media/sar/` holds crops of the SARD drone images (people labelled by posture), from
+[SAR Detection](https://universe.roboflow.com/rtiaditya-yoga-darmawan/sar-detection) on Roboflow Universe, CC BY 4.0
+(original: SARD, IEEE DataPort, DOI 10.21227/ahxm-k331). They stand in for the drone in the demo script.
+
 ### Vehicle bases, the forward post and the reserve UGV
 
 Every vehicle has a home point (`Vehicle.base`, the medical point it starts at). When a mission is dispatched, a

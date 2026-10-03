@@ -191,6 +191,11 @@ def main() -> None:
     from scene_entities import ensure_scene_entities
     ensure_scene_entities(client)
 
+    if DEMO:  # the 05:30 reports, fused before Play so the medic triages the opening batch with them (PRD 8.1)
+        from events import apply_opening
+        from simulate import in_change
+        in_change(client, apply_opening)
+
     print(client.query("MATCH (n) WHERE NOT n:Junction RETURN labels(n) AS label, count(*) AS n ORDER BY n DESC"))
     far = [(eid, round(d)) for eid, (_, d) in snapped.items() if d > 300]
     print("entities more than 300 m from the nearest junction:", far or "none")
