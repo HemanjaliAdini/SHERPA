@@ -9,8 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
-# Raw OSM downloads and generated parquet
-data/
+# Raw OSM downloads and generated parquet, except the extracted sector roads (shared so nobody waits
+# ~20 min for Overpass; rebuild with scripts/fetch_osm.py or scripts/extract_pbf.py)
+data/*
+!data/osm/
+data/osm/*
+!data/osm/roads.json
 
 # macOS
 .DS_Store
