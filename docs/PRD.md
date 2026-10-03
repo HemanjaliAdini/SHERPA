@@ -201,3 +201,52 @@ Not decided yet. To compare with what a teammate is building before we choose.
 4. **A metric for "lives saved" when replaying.** We have no survival model. Option: % of casualties of each triage category that reach the right medical point within their target time (for example category 1 within 60 minutes, following NATO's 10-1-2). "One more UGV" is then a branch with an extra vehicle, compared with the base scenario on this metric.
 5. **Data types.** The TuringDB SDK lists text, integers, decimals and booleans. Option: store `geometry` and `capabilities` as text (JSON), and times as seconds (`Int64`).
 6. **Triage protocol for synthetic casualties.** Option: generate them consistent with the NHS Major Incident Triage Tool (categories 1, 2, 3 and dead), in use in England since June 2024.
+
+
+## PLAN
+Here's the layered plan adapted to the new model, in English so you can drop it into the doc or the PRD:
+
+**Layer 0: Foundation (Saturday morning, all together)**
+- TuringDB running.
+- Roads around Orikhiv from OpenStreetMap, loaded as `Junction` and `ROAD`, with travel minutes already calculated.
+- Medical points (stabilisation points, Role 1, Role 2, field hospital) and vehicles (UGVs, ambulances) placed by hand.
+- **Gate:** `shortestPath` from a casualty's junction to a medical point returns minutes, and one change is created, committed and submitted.
+
+**Layer 1: Scenario and events**
+- Synthetic casualties with their MIST information, consistent with the MITT triage tool.
+- A list of timed events: new reports, updates to existing reports, a bridge collapse, a point overwhelmed or without power.
+- A loop applies the events that are due and commits once per tick.
+- **Gate:** the scenario plays from start to end, and `CALL db.history()` shows one commit per tick.
+
+**Layer 2: Medic decisions and missions**
+- The medic's list of reports and their actions: walk the casualty to the triage point, allocate a UGV, set the order.
+- Mission creation: vehicle, pickups, delivery point, and route steps through `shortestPath`.
+- Checks on capacity, battery, range and threat.
+- **Gate:** every category 1 casualty gets either a mission or a clear "no resource available" flag.
+
+**Layer 3: Changing events and versioning**
+- Bridge collapse: the headline query shows which missions break, the plan is redone on a branch, compared with the current plan, and submitted.
+- Time travel to a past commit, to audit what was known when each decision was made.
+- Replay with one extra UGV on a branch, compared on the "lives saved" metric.
+- **Gate:** close the bridge on a branch, see the broken missions, re-plan, submit, and rewind to before the closure.
+
+**Layer 4: Map and operator screen**
+- Map with casualties coloured by triage category, medical points and their state, vehicles and routes.
+- Buttons for the main actions, and query time in milliseconds on screen.
+- **Gate:** the full demo runs on screen without touching the terminal.
+
+**CUT LINE: freeze the core by Saturday 22:00** (the venue closes at 22:30)
+
+**Layer 5: Bonus, only if layers 0–4 work**
+- Messages requesting more UGVs or medics.
+- Vision or RF from drones and phones.
+- Plain-language questions to a local LLM.
+- A triage suggestion based on MITT.
+
+**Sunday until 12:00:** no new features. Record the demo video, finish the deck, and upload both well before 12:00.
+
+**How to split after layer 0** (my proposal):
+- one person on the scenario and events (layer 1);
+- one on missions and routes (layer 2), then versioning (layer 3);
+- one on the map (layer 4), working against fake data until the real graph is ready;
+- Noo on clinical realism: the MIST reports, MITT, and medical point capabilities.
