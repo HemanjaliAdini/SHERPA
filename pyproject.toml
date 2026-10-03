@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "osmium>=4.3.1",
+    "pillow>=12.3.0",
     "pyarrow>=25.0.1",
+    "rasterio>=1.5.2",
     "turingdb>=3.0",
 ]
