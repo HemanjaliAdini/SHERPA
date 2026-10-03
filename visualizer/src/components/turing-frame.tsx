@@ -2,9 +2,10 @@ import { useMemo } from 'react'
 
 import { useAppStore } from '@/stores'
 
+import useGraphInfo from '@/hooks/use-graph-info'
+import { TC2Page } from '@/pages/c2'
 import { TSelectDatabasePage } from '@/pages/selectdatabase'
 import { TViewerPage } from '@/pages/viewer'
-import useGraphInfo from '@/hooks/use-graph-info'
 
 export const TuringFrame = () => {
   const page = useAppStore((state) => state.page)
@@ -12,6 +13,11 @@ export const TuringFrame = () => {
   const graph = useGraphInfo(graphName)
 
   const content = useMemo(() => {
+    // The C2 page picks its own graph, so it must not wait for the viewer's graph selection
+    if (page === 'c2') {
+      return <TC2Page />
+    }
+
     if (!graph.info || !graph.info.loaded) {
       return <TSelectDatabasePage />
     }
