@@ -391,7 +391,7 @@ Decision 6.11; the contract (event types, payloads, reset) is in section 5, "Eve
 **Order:** A1 and A2 first, in parallel; they unblock everyone. B, C and D can start drafting now and plug in when
 A1 lands.
 
-**A1. Event mechanism and the bridge.** Owner: Adolfo. ⬜ Blocks B1, B2, C1.
+**A1. Event mechanism and the bridge.** Owner: Vashti (her list: "things happen during the simulation, blow up a bridge"). ⬜ Blocks B1, B2, C1.
 - Create `scripts/events.py`: `apply_due(client, now)` reads `Event`s with `status = 'pending'` and `at <= now`,
   ordered by `at`, calls the handler for each `type`, and sets `status = 'applied'` and `applied_at`. An unknown type
   or a failing handler sets `status = 'failed'` and `error`, and the tick goes on.
