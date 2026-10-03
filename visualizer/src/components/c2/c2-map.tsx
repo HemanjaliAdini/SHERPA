@@ -155,6 +155,15 @@ export const C2Map = ({ graph, graphName, change }: Props) => {
       ).addTo(group)
     }
 
+    for (const r of graph.routes) {
+      const points = r.junctions.flatMap((j) => {
+        const n = graph.nodes.get(j)
+        return n ? [[n.lat, n.lon] as [number, number]] : []
+      })
+      const style = { ...EDGE_STYLE.ROUTE_STEP, opacity: 0.85, interactive: false }
+      L.polyline(points, style).addTo(group)
+    }
+
     // Junctions first, then the scenario nodes on top of them
     const ordered = [...graph.nodes.values()].sort(
       (x, y) => Number(x.label !== 'Junction') - Number(y.label !== 'Junction')

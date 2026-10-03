@@ -72,6 +72,7 @@ const Legend = () => (
     </div>
     <EdgeKey color={EDGE_STYLE.NEAR.color} dashed label="NEAR" />
     <EdgeKey color={EDGE_STYLE.AFFECTS.color} dashed label="AFFECTS" />
+    <EdgeKey color={EDGE_STYLE.ROUTE_STEP.color} label="Mission route" />
     <div className="text-content-fourth mt-2">Click a node to inspect it.</div>
   </div>
 )

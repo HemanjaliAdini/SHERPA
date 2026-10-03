@@ -21,12 +21,20 @@ export type GraphEdge = {
   closed: boolean
 }
 
-export type GeoGraph = { nodes: Map<number, GraphNode>; edges: GraphEdge[]; unplaced: number }
+/** A mission's route: its ROUTE_STEP junctions in order */
+export type GraphRoute = { mission: number; junctions: number[] }
+
+export type GeoGraph = {
+  nodes: Map<number, GraphNode>
+  edges: GraphEdge[]
+  routes: GraphRoute[]
+  unplaced: number
+}
 
 const NODES_QUERY =
   'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category'
 const EDGES_QUERY =
-  'MATCH (a)-[r]->(b) RETURN id(a), id(b), type(r), r.highway, r.threat_level, r.status'
+  'MATCH (a)-[r]->(b) RETURN id(a), id(b), type(r), r.highway, r.threat_level, r.status, r.order'
 // Nodes without coordinates (Threat, Mission) take the mean of their placed neighbours; a few
 // passes let positions flow along short chains such as Mission -> Vehicle -> Junction
 const PLACEMENT_PASSES = 3
@@ -64,11 +72,18 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
     neighbours.get(a)?.push(b)
   }
   const seenRoads = new Set<string>()
+  const steps = new Map<number, [number, number][]>() // mission -> [order, junction]
   for (const chunk of edgeData) {
-    const [src, dst, type, highway, threat, status] = chunk as unknown[][]
+    const [src, dst, type, highway, threat, status, order] = chunk as unknown[][]
     for (let i = 0; i < src.length; i++) {
       const s = Number(src[i])
       const d = Number(dst[i])
+      // Route steps become one line per mission, and do not pull the mission's position along the route
+      if (type[i] === 'ROUTE_STEP') {
+        if (!steps.has(s)) steps.set(s, [])
+        steps.get(s)?.push([Number(order[i]), d])
+        continue
+      }
       link(s, d)
       link(d, s)
       // ROAD edges exist once per direction; draw each road once
@@ -101,5 +116,10 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
     }
   }
 
-  return { nodes, edges, unplaced: pending.size }
+  const routes = [...steps].map(([mission, s]) => ({
+    mission,
+    junctions: [...s].sort((x, y) => x[0] - y[0]).map(([, j]) => j),
+  }))
+
+  return { nodes, edges, routes, unplaced: pending.size }
 }

@@ -12,10 +12,18 @@ import sys
 from turingdb import TuringDB
 
 from build_roads import haversine_m
-from seed_toy_graph import CAPS, lit, props
+from cypher import lit, props
 
 GRAPH = sys.argv[1] if len(sys.argv) > 1 else "evac2"
 COS2_LAT = 0.456  # cos^2(47.5 deg): equirectangular squared-distance weight for longitude
+
+CAPS = {
+    "ccp": ["first_aid"],
+    "handover": ["ugv_dock", "first_aid"],
+    "role1": ["first_aid", "stabilisation"],
+    "role2_basic": ["first_aid", "stabilisation", "surgery"],
+    "role3": ["first_aid", "stabilisation", "surgery", "icu"],
+}
 
 # id, name, type, lat, lon, medics_available, free_beds
 MEDICAL_POINTS = [
@@ -29,13 +37,14 @@ MEDICAL_POINTS = [
     ("R2B-1", "Role 2 Basic", "role2_basic", 47.624, 35.648, 5, 8),
     ("R3-1", "Role 3 Zaporizhzhia", "role3", 47.820, 35.180, 12, 20),
 ]
-# id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km, battery_pct, max_threat
-# UGVs wait at HP-1 and ambulances at R1-A, offset ~20 m so the markers do not overlap
+# id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km, battery_pct, max_threat, speed_kmh
+# UGVs wait at HP-1 and ambulances at R1-A, offset ~20 m so the markers do not overlap.
+# speed_kmh is the vehicle's own current speed; a road's cap for the vehicle type can lower it (routing.py)
 VEHICLES = [
-    ("UGV-1", "ugv", 47.5002, 35.812, 1, 0, 25.0, 90.0, 0.8),
-    ("UGV-2", "ugv", 47.4998, 35.812, 1, 0, 25.0, 75.0, 0.8),
-    ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4),
-    ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4),
+    ("UGV-1", "ugv", 47.5002, 35.812, 1, 0, 25.0, 90.0, 0.8, 20.0),
+    ("UGV-2", "ugv", 47.4998, 35.812, 1, 0, 25.0, 75.0, 0.8, 15.0),
+    ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
+    ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
 # id, lat, lon, time_of_injury, triage_category, mobility. All on the near side of the front line (47.436)
 CASUALTIES = [
@@ -73,11 +82,11 @@ def create_statement() -> str:
                     medics_available=medics, state=lit("operational"), free_beds=beds)
             + ")"
         )
-    for eid, typ, lat, lon, litter, amb, rng, batt, max_threat in VEHICLES:
+    for eid, typ, lat, lon, litter, amb, rng, batt, max_threat, speed in VEHICLES:
         parts.append(
             f"({var(eid)}:Vehicle "
             + props(id=lit(eid), type=lit(typ), lat=lat, lon=lon, litter_capacity=litter, ambulatory_capacity=amb,
-                    range_km=rng, battery_pct=batt, max_threat=max_threat, status=lit("idle"))
+                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"))
             + ")"
         )
     for eid, lat, lon, toi, triage, mobility in CASUALTIES:

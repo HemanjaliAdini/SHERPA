@@ -94,6 +94,8 @@ export type EdgeStyle = { color: string; weight: number; dashArray?: string }
 export const EDGE_STYLE: Record<string, EdgeStyle> = {
   NEAR: { color: '#9fb0c3', weight: 1.2, dashArray: '3 4' },
   AFFECTS: { color: THREAT_MARKER_COLOR, weight: 1.5, dashArray: '5 3' },
+  // Not drawn edge by edge: a mission's ROUTE_STEPs are joined in order into one line
+  ROUTE_STEP: { color: '#c084fc', weight: 4 },
 }
 // Any other relationship (e.g. mission edges added later) is still drawn, just in this colour
 export const OTHER_EDGE_STYLE: EdgeStyle = { color: '#c084fc', weight: 2 }

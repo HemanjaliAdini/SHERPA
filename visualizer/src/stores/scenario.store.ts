@@ -11,7 +11,7 @@ export type ScenarioStore = {
 }
 
 export const useScenarioStore = create<ScenarioStore>((set) => ({
-  graph: 'evac2',
+  graph: new URLSearchParams(window.location.search).get('graph') ?? 'evac2',
   setGraph: (v: string) => set({ graph: v }),
 
   change: undefined,
