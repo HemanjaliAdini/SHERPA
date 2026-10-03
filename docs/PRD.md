@@ -105,7 +105,8 @@ T0408, T0803, T0812, T0815. Scenario time: September 2023 (Robotyne). The front 
 
 - **TuringDB** holds the state of the world and its history. Every change (a new casualty, a delay, a closed bridge,
   a planned mission) is a commit, so time travel, branches and replay come for free.
-- **Routing runs in Python** (`scripts/routing.py`), because TuringDB has no shortest-path search (see 6.1).
+- **Routing:** two implementations today, to be merged into one (7.12): `scripts/routing.py` (Python, terminal) and
+  the C2 mission planner (`visualizer/src/components/c2/planner.ts`, operator screen).
 - **Everything hangs off the road network.** Casualties, vehicles and medical points link to their nearest junction
   with `NEAR`. A route is a path of `ROAD` edges between those junctions.
 - **A mission** is vehicle → casualty → medical point: two route searches with that vehicle.
@@ -181,7 +182,10 @@ Each one: what we chose and why. Do not reopen without a new fact.
      whenever a vehicle's speed, a road's delay or a road's status changes.
    - *Rejected:* minutes stored per vehicle type (cannot tell two UGVs apart, and every delay means rewriting roads);
      patching TuringDB (a C++ server).
-   - *Verified:* TuringDB 3.0 has no `shortestPath` (it is a parse error), so this is the only option that works.
+   - *Verified:* TuringDB 3.0 does have a shortest path, with its own syntax:
+     `MATCH (a) WHERE a = <id> MATCH (b) WHERE b = <id> shortestPath(a, b, length_m, dist, path) RETURN dist, path`.
+     The weight must be one stored property; an expression such as `length_m / speed_ugv_kmh` is a parse error.
+     So it can find the shortest or the fastest-per-type route, but not the fastest for one specific vehicle.
 2. **The system does logistics, the medic does triage** (requirements 2–3).
    - *Pickup order:* by triage category, then time since injury.
    - *Medical point:* among points with the needed capability, operational and with a free bed, the one with the
@@ -227,7 +231,8 @@ To settle together (see the plan: "Together, first").
 8. **Event format** for Layer 1: what a timed event looks like (time, type, payload). It must include speed changes
    and delays, not only new casualties and closures, or the demo never shows travel time changing.
 9. **The bridge for the collapse event:** one real OSM bridge (`bridge = true`) on the main road north from Robotyne.
-10. **UGV to ambulance relay.** A mission is one vehicle today. UGVs have 25 km range and no point with
+10. **UGV to ambulance relay.** In `routing.py` a mission is one vehicle. The C2 planner already sends UGVs to a
+    `handover` point (or a collection point) and ambulances to Role 1+; adopt that rule everywhere. UGVs have 25 km range and no point with
     `stabilisation` is within reach by real road, so on `evac3` the T2 casualties get "no resource" while UGV-2 sits
     idle. Real doctrine: the UGV carries to a `handover` point and an ambulance takes over.
     - *Proposal:* a mission can have two legs (UGV to the nearest `handover`, ambulance onward). This also keeps
@@ -235,6 +240,23 @@ To settle together (see the plan: "Together, first").
 11. **Scenario coordinates.** They come from the toy graph and were not chosen on real roads: several entities sit
     0.5–1.8 km from the nearest junction (for example CCP-W, CCP-E, R2B-1, CAS-3). Noo to move them onto real roads
     and villages.
+12. **Two mission planners.** `scripts/routing.py` and the C2 planner (`planner.ts`) differ:
+
+    | | `routing.py` | C2 planner |
+    |---|---|---|
+    | Route | fastest, per-vehicle speed and `delay_factor` | shortest by length (TuringDB `shortestPath`), minutes from road speeds per type |
+    | UGV destination | by capability (never fits T1/T2) | `handover` or collection point |
+    | Checks | capacity, range | capacity, range × battery, threat vs `max_threat` |
+    | Casualties per trip | one | several |
+    | Who confirms | nobody (batch) | operator, best option preselected |
+    | Vehicle status set | `assigned` | `tasked` |
+    | Mission time fields | `eta_min`, `distance_km` | `created_at`, `eta` (datetime) |
+
+    - *Proposal:* the C2 planner is the product (the demo runs on screen). Port into it the fastest route with
+      per-vehicle speed and `delay_factor`. Keep `routing.py` for `close` and for tests, or retire it. Align status and
+      time fields on the C2 planner's (`tasked`, `eta` datetime).
+    - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
+      race between the vehicle list refresh and "Create mission". For Noo.
 
 ---
 
