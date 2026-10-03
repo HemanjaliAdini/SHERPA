@@ -5,26 +5,66 @@ import { CypherQueryError } from '@/api/responses/cypherQuery.response'
 import type { GeoGraph } from './graph-data'
 import { type QueryOutcome, selectionFromResult } from './selection'
 
-const EXAMPLES: { label: string; query: string }[] = [
+// Preset queries, all checked against the evac2 graph. Routes use road length until
+// per-vehicle cost properties exist.
+const EXAMPLES: { group: string; label: string; query: string }[] = [
   {
+    group: 'Planner',
+    label: 'Pickup queue by triage',
+    query:
+      "MATCH (c:Casualty) WHERE c.status = 'awaiting_pickup' " +
+      'RETURN c, c.id, c.triage_category, c.mobility ORDER BY c.triage_category, c.id',
+  },
+  {
+    group: 'Planner',
+    label: 'Nearest UGV to CAS-3 by road',
+    query:
+      "MATCH (v:Vehicle {type: 'ugv'})-[:NEAR]->(a), (c:Casualty {id: 'CAS-3'})-[:NEAR]->(b) " +
+      'shortestPath(a, b, length_m, dist, path) RETURN dist, path',
+  },
+  {
+    group: 'Planner',
+    label: 'Nearest medical point with free beds for CAS-1',
+    query:
+      "MATCH (c:Casualty {id: 'CAS-1'})-[:NEAR]->(a), (m:MedicalPoint)-[:NEAR]->(b) " +
+      'WHERE m.free_beds > 0 shortestPath(a, b, length_m, dist, path) RETURN dist, path',
+  },
+  {
+    group: 'Planner',
+    label: 'Ambulance leg: handover point HP-1 to Role 1 R1-A',
+    query:
+      "MATCH (h:MedicalPoint {id: 'HP-1'})-[:NEAR]->(a), (m:MedicalPoint {id: 'R1-A'})-[:NEAR]->(b) " +
+      'shortestPath(a, b, length_m, dist, path) RETURN dist, path',
+  },
+  {
+    group: 'Planner',
+    label: "Roads above AMB-1's threat limit (empty until a threat is active)",
+    query:
+      "MATCH (v:Vehicle {id: 'AMB-1'}) MATCH (a)-[r:ROAD]->(b) " +
+      'WHERE r.threat_level > v.max_threat RETURN a, r, b',
+  },
+  {
+    group: 'Planner',
+    label: 'Bridges (chokepoints for disruption events)',
+    query: 'MATCH (a)-[r:ROAD]->(b) WHERE r.bridge RETURN a, r, b',
+  },
+  {
+    group: 'Explore',
     label: 'Casualties, their junction and the roads out of it',
     query: 'MATCH (c:Casualty)-[r:NEAR]->(j:Junction)-[e:ROAD]->(k) RETURN c, r, j, e, k',
   },
   {
-    label: 'Medical points with free beds',
-    query: 'MATCH (m:MedicalPoint) WHERE m.free_beds > 0 RETURN m, m.name, m.free_beds',
+    group: 'Explore',
+    label: 'Casualties more than 500 m from a road',
+    query: 'MATCH (c:Casualty)-[r:NEAR]->(j) WHERE r.distance_m > 500 RETURN c, r, j, r.distance_m',
   },
   {
-    label: 'Shortest road route CAS-1 to R1-A',
-    query:
-      "MATCH (c:Casualty {id: 'CAS-1'})-[:NEAR]->(a), (m:MedicalPoint {id: 'R1-A'})-[:NEAR]->(b) " +
-      'shortestPath(a, b, length_m, dist, path) RETURN dist, path',
-  },
-  {
+    group: 'Explore',
     label: 'Roads within 2 hops of threat THR-1',
     query: "MATCH (t:Threat {id: 'THR-1'})-[a:AFFECTS]->(j)-[e:ROAD*1..2]-(k) RETURN t, a, j, e, k",
   },
 ]
+const EXAMPLE_GROUPS = [...new Set(EXAMPLES.map((e) => e.group))]
 const MAX_TABLE_ROWS = 50
 
 type Props = {
@@ -38,7 +78,9 @@ const cell = (v: unknown) =>
   v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
 
 export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
-  const [query, setQuery] = useState(EXAMPLES[0].query)
+  const [query, setQuery] = useState(
+    'MATCH (c:Casualty)-[r:NEAR]->(j:Junction)-[e:ROAD]->(k) RETURN c, r, j, e, k'
+  )
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<QueryOutcome | null>(null)
@@ -120,10 +162,16 @@ export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
           <option value="" disabled>
             Examples...
           </option>
-          {EXAMPLES.map((ex, i) => (
-            <option key={ex.label} value={i}>
-              {ex.label}
-            </option>
+          {EXAMPLE_GROUPS.map((group) => (
+            <optgroup key={group} label={group}>
+              {EXAMPLES.map((ex, i) =>
+                ex.group === group ? (
+                  <option key={ex.label} value={i}>
+                    {ex.label}
+                  </option>
+                ) : null
+              )}
+            </optgroup>
           ))}
         </select>
         <span className="text-content-fourth flex-1 truncate">
