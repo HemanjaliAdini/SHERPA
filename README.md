@@ -96,8 +96,8 @@ the point's medic team says so on the casualty's radio.
   for it (`reinforce` in `scripts/simulate.py`): `status = 'requested'` with `arrives_at` and `arrive_point`. It is
   carried by road at 60 km/h, becomes idle at the handover point nearest that casualty, and is then dispatched
   normally. It is not drawn on the road while it travels.
-- **Losing a vehicle:** an idle vehicle's info box has **Mark as lost** (`status = 'lost'`, `damage = 'heavy'`); the
-  dispatcher no longer uses it. Reset brings it back.
+- **Losing a vehicle:** an idle vehicle's info box has **Mark as lost** (`status = 'disabled'`, `damage = 'heavy'`,
+  `disabled_by = 'operator'`, the same state as a vehicle stopped by an event); the dispatcher no longer uses it. Reset brings it back.
 
 ## Tests
 

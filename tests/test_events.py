@@ -289,7 +289,8 @@ def test_reset_restarts_a_stopped_vehicle_and_clears_the_stranded(fresh):
     seeded = {vid: battery for vid, *_, battery, _, _ in VEHICLES}
     now = {r["id"]: r for r in rows(fresh, "MATCH (v:Vehicle) RETURN v.id AS id, v.status AS s, v.battery_pct AS b, "
                                            "v.disabled_by AS by")}
-    assert all(now[v]["s"] == "idle" and now[v]["b"] == seeded[v] and now[v]["by"] is None for v in seeded)
+    # the vehicles of the test graph (the seed list also holds vehicles the test graph does not have)
+    assert all(now[v]["s"] == "idle" and now[v]["b"] == seeded[v] and now[v]["by"] is None for v in now)
     assert one(fresh, "MATCH (c:Casualty) WHERE c.stranded_by IS NOT NULL RETURN count(c) AS n")["n"] == 0
 
 

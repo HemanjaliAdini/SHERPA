@@ -258,7 +258,7 @@ export const TC2Page = () => {
           )
         else if (before === 'requested' && v.status !== 'reserve')
           lines.push(`${v.id} from ${pointName(v.base)} has arrived at ${pointName(v.arrivePoint)}`)
-        else if (v.status === 'lost') lines.push(`${v.id} is lost and out of service`)
+        else if (v.status === 'disabled') lines.push(`${v.id} is out of service`)
       }
       vehicleStatus.current.set(v.id, v.status)
     }

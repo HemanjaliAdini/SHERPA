@@ -90,9 +90,9 @@ function VehicleRows({
             vehicle.arrivePoint}
         </Row>
       )}
-      {vehicle.status === 'lost' && (
+      {vehicle.status === 'disabled' && (
         <Row label="Out of service">
-          <span className="text-red-400">lost</span>
+          <span className="text-red-400">disabled</span>
         </Row>
       )}
       <Row label="Casualties aboard">
@@ -219,11 +219,13 @@ function CommandRows({ node, scenario }: Pick<Props, 'node' | 'scenario'>) {
 export function EntityCard({ node, graph, scenario, onClose, onMarkLost }: Props) {
   const facility =
     node.label === 'MedicalPoint' ? scenario.facilities.find((f) => f.nid === node.nid) : undefined
+  // node.kind is 'disabled' for a stopped vehicle, so its type is read from the scenario
+  const vehicleType = scenario.vehicles.find((v) => v.nid === node.nid)?.type ?? node.kind
   const subtitle =
     node.label === 'MedicalPoint'
       ? `${facility?.name ?? ''} · ${FACILITY_LABEL[node.kind] ?? node.kind}`
       : node.label === 'Vehicle'
-        ? `${node.kind === 'ugv' ? 'UGV' : words(node.kind)} · ${words(node.status)}`
+        ? `${vehicleType === 'ugv' ? 'UGV' : words(vehicleType)} · ${words(node.status)}`
         : node.label === 'Medic'
           ? `${node.kind} medic team`
           : 'Command post'
