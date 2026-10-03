@@ -82,7 +82,9 @@ function VehicleRows({
   return (
     <>
       {home && <Row label="Belongs to">{home.name}</Row>}
-      {vehicle.status === 'reserve' && <Row label="Reserve">held back until no UGV is free</Row>}
+      {vehicle.status === 'reserve' && (
+        <Row label="Reserve">called when a UGV is out of service, or a casualty is waiting with no UGV free</Row>
+      )}
       {vehicle.status === 'requested' && vehicle.requestReason && (
         <Row label="Called because">{vehicle.requestReason}</Row>
       )}
