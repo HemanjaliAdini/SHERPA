@@ -312,7 +312,7 @@ export const TC2Page = () => {
 
         <div className="pointer-events-none absolute right-3 bottom-6 z-[1000] flex flex-col items-end gap-2">
           <MapControls
-            onRotate={mode === '3d' ? (degrees) => mapRef.current?.rotate(degrees) : undefined}
+            cameraControls={mode === '3d'}
             onZoomIn={() => mapRef.current?.zoomIn()}
             onZoomOut={() => mapRef.current?.zoomOut()}
             onReset={() => mapRef.current?.resetView()}
