@@ -439,6 +439,8 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
   ]
   const ground = (n: GraphNode) => lift(n.lon, n.lat)
   const placed = [terrainOn, terrainScale, heightAt]
+
+
   const layers = [
     terrainOn &&
       new TerrainLayer({
@@ -714,6 +716,11 @@ export const C2Map3D = forwardRef<C2MapHandle, Props>(function C2Map3D(
       return
     }
     onSelectNode(n.nid)
+    // Scenario entities show their entity card on the page (entity-card.tsx); junctions use the inspector
+    if (n.label !== 'Junction') {
+      closeInspector()
+      return
+    }
     openInspector(n)
   }
 

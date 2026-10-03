@@ -10,6 +10,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://localhost:8080',
     headless: true,
+    channel: process.env.PLAYWRIGHT_CHANNEL,
   },
   webServer: {
     command: 'npm run dev',

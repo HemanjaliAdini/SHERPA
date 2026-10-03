@@ -15,6 +15,8 @@ data/*
 !data/osm/
 data/osm/*
 !data/osm/roads.json
+# Noo's TCCC doctrine graph (branch feat/triage-app, app/assets/graph/triage_v3.jsonl), loaded by seed_doctrine.py
+!data/doctrine/
 
 # macOS
 .DS_Store

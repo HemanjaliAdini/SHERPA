@@ -29,6 +29,14 @@ CAPS = {
     "role2_basic": ["first_aid", "stabilisation", "surgery"],
     "role3": ["first_aid", "stabilisation", "surgery", "icu"],
 }
+# Medical equipment held at each type of point, shown on the C2 screen. ponytail: placeholder lists
+EQUIPMENT = {
+    "ccp": ["tourniquets", "dressings", "stretcher"],
+    "handover": ["tourniquets", "dressings", "stretcher", "ugv_charger"],
+    "role1": ["tourniquets", "dressings", "iv_fluids", "oxygen", "monitor"],
+    "role2_basic": ["iv_fluids", "oxygen", "monitor", "blood", "surgical_set", "ventilator"],
+    "role3": ["iv_fluids", "oxygen", "monitor", "blood", "surgical_set", "ventilator", "icu_beds", "ct_scanner"],
+}
 
 # Positions sit on (or within ~200 m of) a junction of the real OSM road network, so every entity is reachable.
 # id, name, type, lat, lon, medics_available, free_beds
@@ -52,6 +60,9 @@ VEHICLES = [
     ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
     ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
+# Vehicle.damage is none, light or heavy; vehicles not listed here start undamaged.
+# UGV-2 starts lightly damaged, which is why its speed and battery above are lower than UGV-1's.
+VEHICLE_DAMAGE = {"UGV-2": "light"}
 # id, lat, lon, time_of_injury, then the MIST report the medic triages from: mechanism, injuries, signs, treatment.
 # Casualties arrive untriaged (status reported); the medic sets triage_category and mobility on the C2 screen.
 # ponytail: placeholder clinical texts, to be replaced by Noo / the triage parser. All behind the front line (47.436)
@@ -93,6 +104,7 @@ def create_statement(demo: bool = False) -> str:
         parts.append(
             f"({var(eid)}:MedicalPoint "
             + props(id=lit(eid), name=lit(name), lat=lat, lon=lon, type=lit(typ), capabilities=lit(CAPS[typ]),
+                    equipment=lit(EQUIPMENT[typ]),
                     medics_available=medics, state=lit("operational"), free_beds=beds)
             + ")"
         )
@@ -100,7 +112,8 @@ def create_statement(demo: bool = False) -> str:
         parts.append(
             f"({var(eid)}:Vehicle "
             + props(id=lit(eid), type=lit(typ), lat=lat, lon=lon, litter_capacity=litter, ambulatory_capacity=amb,
-                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"))
+                    range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"),
+                    damage=lit(VEHICLE_DAMAGE.get(eid, "none")))
             + ")"
         )
     for eid, lat, lon, toi, mechanism, injuries, signs, treatment in CASUALTIES:
@@ -160,6 +173,9 @@ def main() -> None:
         raise
     finally:
         client.checkout()
+
+    from scene_entities import ensure_scene_entities
+    ensure_scene_entities(client)
 
     print(client.query("MATCH (n) WHERE NOT n:Junction RETURN labels(n) AS label, count(*) AS n ORDER BY n DESC"))
     far = [(eid, round(d)) for eid, (_, d) in snapped.items() if d > 300]

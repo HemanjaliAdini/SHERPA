@@ -24,6 +24,7 @@ import { fetchGraph } from '@/components/c2/graph-data'
 import { mapAlerts } from '@/components/c2/map-alerts'
 import { Kbd, MapControls } from '@/components/c2/map-controls'
 import { MissionPlanner } from '@/components/c2/mission-planner'
+import type { Plan } from '@/components/c2/planner'
 import { QueryBar } from '@/components/c2/query-bar'
 import {
   type Casualty,
@@ -31,6 +32,9 @@ import {
   fetchScenario,
   formatClock,
 } from '@/components/c2/scenario-data'
+import { useRadioHistory } from '@/components/c2/communications'
+import { CasualtyRadio } from '@/components/c2/casualty-radio'
+import { ENTITY_CARD_LABELS, EntityCard } from '@/components/c2/entity-card'
 import { type Selection, neighbourhood, selectionFromIds } from '@/components/c2/selection'
 import {
   SPEEDS,
@@ -96,6 +100,8 @@ const Legend = () => (
     <NodeKey color={VEHICLE_COLOR.ugv} label="Vehicle: UGV" />
     <NodeKey color={VEHICLE_COLOR.ambulance} label="Vehicle: ambulance" />
     <NodeKey color={VEHICLE_COLOR.disabled} label="Vehicle: stopped (battery)" />
+    <NodeKey color="#22d3ee" label="Medic team" />
+    <NodeKey color="#34d399" label="Command" />
     <NodeKey color={THREAT_MARKER_COLOR} label="Threat" />
     <NodeKey color={EVENT_COLOR} label="Event alert, where it happened" />
     <SectionTitle>Edges</SectionTitle>
@@ -192,8 +198,12 @@ export const TC2Page = () => {
     queryKey: ['c2-scenario', graphName, change],
     queryFn: () => fetchScenario(graphName, change),
     staleTime: Number.POSITIVE_INFINITY,
-    refetchInterval: refresh,
+    refetchInterval: () => running ? 1000 : refresh(),
   })
+  const selectedCasualty = focusNid === null ? undefined : scenario.data?.casualties.find((c) => c.nid === focusNid)
+  const focusNode = focusNid === null ? undefined : graph.data?.nodes.get(focusNid)
+  const cardNode = focusNode && ENTITY_CARD_LABELS.has(focusNode.label) ? focusNode : undefined
+  const radioHistory = useRadioHistory(graph.data, scenario.data, now, graphName)
   const untriaged = scenario.data?.casualties.filter((c) => c.status === 'reported').length ?? 0
   const events = useQuery({
     queryKey: ['c2-events', graphName, change],
@@ -259,7 +269,7 @@ export const TC2Page = () => {
     if (preview) setFitRequest((n) => n + 1)
   }, [])
 
-  const missionCreated = (missionId: string) => {
+  const missionCreated = (missionId: string, _plan: Plan) => {
     setPlanningFor(null)
     setNotice(`Mission ${missionId} created and committed to the graph`)
     queryClient.invalidateQueries({ queryKey: ['c2-graph'] })
@@ -347,6 +357,27 @@ export const TC2Page = () => {
           >
             <C2Map3D ref={mapRef} {...mapProps} terrainScale={terrainScale} />
           </Suspense>
+        )}
+
+
+
+        {selectedCasualty && <div className="pointer-events-none absolute top-[120px] right-3 z-[1100] flex max-h-[min(340px,calc(100%-140px))] w-[320px] max-w-[calc(100%-24px)] flex-col">
+          <CasualtyRadio key={selectedCasualty.id} casualty={selectedCasualty}
+            messages={radioHistory.filter((message) => message.casualtyId === selectedCasualty.id)}
+            assignment={scenario.data?.assignments?.find((mission) => mission.casualtyId === selectedCasualty.id)}
+            onClose={() => selectNode(null)} />
+        </div>}
+        {cardNode && graph.data && scenario.data && (
+          <div className="pointer-events-none absolute top-[120px] right-3 z-[1100] flex max-h-[min(380px,calc(100%-140px))] w-[320px] max-w-[calc(100%-24px)] flex-col">
+            <EntityCard
+              key={cardNode.nid}
+              node={cardNode}
+              graph={graph.data}
+              scenario={scenario.data}
+              now={now}
+              onClose={() => selectNode(null)}
+            />
+          </div>
         )}
 
         <div className="pointer-events-none absolute top-3 left-3 z-[1000] flex max-w-[calc(100%-24px)] flex-col items-start gap-2">
@@ -450,7 +481,9 @@ export const TC2Page = () => {
               </button>
               <button
                 type="button"
-                onClick={() => act(requestReset(graphName))}
+                onClick={() => {
+                  act(requestReset(graphName))
+                }}
                 className="text-content-fourth hover:text-content-primary underline"
                 title="Put the scenario back to its start; the history is kept"
               >
@@ -486,6 +519,7 @@ export const TC2Page = () => {
             {notice}
           </div>
         )}
+
         {scenario.isError ? (
           <div className="p-4 text-sm text-[#fca5a5]">Could not load the scenario.</div>
         ) : planningFor && graph.data && scenario.data ? (

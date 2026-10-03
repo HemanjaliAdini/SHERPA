@@ -12,4 +12,5 @@ DEMO="${2:-}"
 uv run python scripts/build_roads.py
 uv run python -c "from turingdb import TuringDB; TuringDB(host='http://localhost:6666').query(\"LOAD PARQUET 'evac_roads' AS $GRAPH\")"
 uv run python scripts/seed_scenario.py "$GRAPH" $DEMO
+uv run python scripts/seed_doctrine.py "$GRAPH"   # Noo's TCCC doctrine graph, read-only (PRD A2a)
 echo "graph '$GRAPH' ready. Plan missions with: uv run python scripts/routing.py plan $GRAPH"

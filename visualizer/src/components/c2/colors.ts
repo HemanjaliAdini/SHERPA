@@ -101,6 +101,8 @@ export const LABEL_COLOR: Record<string, string> = {
   MedicalPoint: FACILITY_COLOR.role1,
   Vehicle: VEHICLE_COLOR.ugv,
   Threat: THREAT_MARKER_COLOR,
+  Medic: '#22d3ee',
+  Command: '#34d399',
   Mission: '#c084fc',
   Event: EVENT_COLOR,
 }

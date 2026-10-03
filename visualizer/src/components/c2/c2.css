@@ -319,3 +319,13 @@
 .c2-event-ended {
   color: #86efac;
 }
+
+@keyframes radio-bubble-life {
+  0% { opacity: 0; transform: translateY(5px); }
+  6%, 86% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-3px); }
+}
+.radio-speech-bubble { animation: radio-bubble-life 6.5s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .radio-speech-bubble { animation: none; }
+}

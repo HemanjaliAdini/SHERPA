@@ -68,6 +68,10 @@ build() {  # graph name, then --demo for the scripted demo
 build "$GRAPH"
 [ -n "$DEMO_GRAPH" ] && build "$DEMO_GRAPH" --demo
 
+# Medic teams and command (PRD 6.16), on each graph; idempotent
+uv run python scripts/scene_entities.py "$GRAPH"
+[ -n "$DEMO_GRAPH" ] && uv run python scripts/scene_entities.py "$DEMO_GRAPH"
+
 # Simulators, one per graph: each follows its SimControl node (play/pause on the C2 screen), one commit per minute
 uv run python scripts/simulate.py "$GRAPH" &
 if [ -n "$DEMO_GRAPH" ]; then
