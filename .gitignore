@@ -17,3 +17,6 @@ data/
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Playwright MCP screenshots and snapshots
+.playwright-mcp/
