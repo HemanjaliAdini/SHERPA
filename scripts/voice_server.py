@@ -1,4 +1,5 @@
-"""Voice questions for the C2 page: speech -> text (Parakeet) -> intent (MiniLM) -> answer from the graph.
+"""Voice questions for the C2 page, in English or Ukrainian: speech -> text (Parakeet) -> intent (multilingual
+MiniLM) -> answer from the graph, in the language of the question.
 
   POST /voice/ask?graph=<name>[&change=..][&now=ISO]  body: 16 kHz mono WAV (Content-Type audio/wav)
                                                        or JSON {"text": "...", "graph": ..., "change": ..., "now": ...}
@@ -27,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from voice_query import INTENTS, Matcher, ask
 
 ASR_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # English and Ukrainian
 PORT = int(os.environ.get("VOICE_PORT", 6680))
 DEFAULT_GRAPH = os.environ.get("GRAPH")  # only for requests that name no graph
 

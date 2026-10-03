@@ -1,12 +1,14 @@
-"""Plain-language questions about the scenario, answered from the graph as one sentence and a small table.
+"""Plain-language questions about the scenario, in English or Ukrainian, answered from the graph as one sentence
+and a small table, in the language of the question.
 
-Understanding is retrieval, not generation. Every intent below has example phrasings, embedded once with
-all-MiniLM-L6-v2; a question takes the intent of its most similar example. Under MIN_SCORE the answer is
-"I didn't understand", never a guess. Ids (casualty 3, UGV 1, T1, surgery) are read from the text by rules,
-not by the model, so an answer never names a casualty the medic did not say.
+Understanding is retrieval, not generation. Every intent below has example phrasings in both languages (the
+Ukrainian ones are in voice_text.py), embedded once with paraphrase-multilingual-MiniLM-L12-v2; a question takes the
+intent of its most similar example. Under MIN_SCORE the answer is "I didn't understand", never a guess. Ids
+(casualty 3, UGV 1, T1, surgery) are read from the text by rules, not by the model, so an answer never names a
+casualty the medic did not say.
 
-To teach a new phrasing, add it to the intent's examples. To add a question, write a handler and register it
-with @intent. Handlers only read: the system answers, the medic decides.
+To teach a new phrasing, add it to the intent's examples (English here, Ukrainian in voice_text.py). To add a
+question, write a handler and register it with @intent. Handlers only read: the system answers, the medic decides.
 """
 import json
 import math
@@ -21,12 +23,16 @@ from typing import Callable
 
 from build_roads import haversine_m
 from routing import DESTINATION_TYPES, TRIAGE_ORDER, Road, route
+from voice_text import CAPABILITY_LABELS, LABELS, TEXT, UK_EXAMPLES, UK_TITLES, UK_VALUES
 
 TURING_API = os.environ.get("TURING_API", "http://localhost:6666")
 DEFAULT_NOW = datetime(2023, 9, 12, 5, 30, tzinfo=timezone.utc)  # scenario start, for graphs without a Clock
-# Cosine similarity of all-MiniLM-L6-v2, chosen on tests/test_voice_query.py: questions in scope score 0.6+,
-# unrelated speech mostly under 0.4
-MIN_SCORE = 0.5
+# Cosine similarity of paraphrase-multilingual-MiniLM-L12-v2, chosen on tests/test_voice_query.py: questions in
+# scope score 0.6+ in both languages; 0.5 let through about half the unrelated speech
+MIN_SCORE = 0.6
+# Fillers and courtesies: too short to embed reliably ("uh" scored 0.83 against "sitrep"), so never matched
+NOT_QUESTIONS = {"uh", "um", "erm", "hmm", "ok", "okay", "yes", "no", "thanks", "thank you", "hello", "hi", "cheers",
+                 "е", "ем", "гм", "так", "ні", "добре", "гаразд", "дякую", "спасибі", "привіт", "алло"}
 GOLDEN_HOUR_MIN = 60
 LOW_BATTERY_PCT = 30
 AT_POINT_M = 300  # closer than this to a medical point is "at" it
@@ -40,24 +46,66 @@ LIVE_MISSION = ("planned", "active")
 NUMBER_WORDS = {w: i for i, w in enumerate(
     "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
     "seventeen eighteen nineteen twenty".split())}
-NUMBER = r"(\d+|" + "|".join(NUMBER_WORDS) + r")\b"
-CASUALTY_RE = re.compile(r"\b(?:cas(?:ualty|ualties)?|cass|cast|kas|kass|patient)[\s\-#]*(?:number\s*|no\.?\s*)?" + NUMBER, re.I)
-VEHICLE_RE = re.compile(
-    r"\b(ugv|ugb|u\.?\s?g\.?\s?v\.?|robot|amb(?:ulance)?)s?[\s\-#]*(?:number\s*|no\.?\s*)?" + NUMBER, re.I)
-TRIAGE_RE = re.compile(r"\b(?:t|tee|p|pee|priority|cat(?:egory)?|triage(?:\s+category)?)[\s\-]*([1-4]|one|two|three|four)(?:'?s)?\b",
-                       re.I)
-TRIAGE_WORDS = {"immediate": "T1", "urgent": "T2", "delayed": "T3", "minimal": "T3", "minor": "T3", "expectant": "T4"}
+# Ukrainian numbers as they follow a noun: cardinal and ordinal, in the cases speech produces
+for n, words in enumerate([
+    "один одна одне одного одному перший перша першого першому першої",
+    "два дві двох другий друга другого другому другої",
+    "три трьох третій третя третього третьому третьої",
+    "чотири чотирьох четвертий четверта четвертого четвертому",
+    "п'ять п'яти п'ятий п'ята п'ятого п'ятому",
+    "шість шести шостий шоста шостого шостому",
+    "сім семи сьомий сьома сьомого",
+    "вісім восьми восьмий восьма восьмого",
+    "дев'ять дев'яти дев'ятий дев'ята дев'ятого",
+    "десять десяти десятий десята десятого",
+], start=1):
+    NUMBER_WORDS |= dict.fromkeys(words.split(), n)
+NUMBER = r"(\d+|" + "|".join(sorted(map(re.escape, NUMBER_WORDS), key=len, reverse=True)) + r")(?!\w)"
+SEP = r"[\s\-#№]*(?:number\s*|no\.?\s*|номер\s*)?"
+CASUALTY_WORD = r"(?:cas(?:ualty|ualties)?|cass|cast|kas|kass|patient|поранен\w*|постраждал\w*|потерпіл\w*|пацієнт\w*|кас)"
+CASUALTY_RE = re.compile(r"\b" + CASUALTY_WORD + SEP + NUMBER + r"(?!\s*категорі)", re.I)  # not "поранені першої категорії"
+AMBULANCE = r"amb(?:ulance)?s?|швидк\w*|амбуланс\w*|санітарк\w*"
+VEHICLE_WORD = rf"(ugv|ugb|u\.?\s?g\.?\s?v\.?|robots?|{AMBULANCE}|робот\w*|нрк)"
+VEHICLE_RE = re.compile(r"\b" + VEHICLE_WORD + SEP + NUMBER, re.I)
+# Ukrainian also puts an ordinal first ("третього пораненого", "другий робот"); only ordinals, so that a count
+# ("три поранених", three casualties) is not read as an id
+ORDINAL = r"(\w*(?:перш|друг|трет|четверт|п'ят|шост|сьом|восьм|дев'ят|десят)\w*)"
+CASUALTY_FIRST_RE = re.compile(r"(?<!\w)" + ORDINAL + r"\s+" + CASUALTY_WORD + r"(?!\w)", re.I)
+VEHICLE_FIRST_RE = re.compile(r"(?<!\w)" + ORDINAL + r"\s+" + VEHICLE_WORD + r"(?!\w)", re.I)
+TRIAGE_FIRST_RE = re.compile(r"(?<!\w)" + ORDINAL + r"\s+категорі\w*", re.I)  # "першої категорії"
+TRIAGE_RE = re.compile(r"(?<!\w)(?:t|tee|p|pee|priority|cat(?:egory)?|triage(?:\s+category)?|т|пріоритет\w*|"
+                       r"категорі\w*)[\s\-]*([1-4]|one|two|three|four|один|два|три|чотири|перш\w*|друг\w*|трет\w*)"
+                       r"(?:'?s)?(?!\w)", re.I)
+TRIAGE_WORDS = {"immediate": "T1", "urgent": "T2", "delayed": "T3", "minimal": "T3", "minor": "T3", "expectant": "T4",
+                r"невідкладн\w*": "T1", r"термінов\w*": "T2", r"відстрочен\w*": "T3", r"відкладен\w*": "T3"}
 CAPABILITY_WORDS = [
-    (r"\bsurg|\boperat|\btheatre|\btheater", "surgery"),
-    (r"\bicu\b|intensive care", "icu"),
-    (r"\bstabili[sz]", "stabilisation"),
-    (r"first aid", "first_aid"),
+    (r"\bsurg|\boperat|\btheatre|\btheater|\bоперац|\bхірург", "surgery"),
+    (r"\bicu\b|intensive care|\bреанімац|\bінтенсивн", "icu"),
+    (r"\bstabili[sz]|\bстабіліз", "stabilisation"),
+    (r"first aid|\bперш\w* допомог", "first_aid"),
     (r"\bdock|\bcharg", "ugv_dock"),
 ]
+CYRILLIC = re.compile(r"[а-яіїєґ]", re.I)
 
 
 def number(word: str) -> int:
-    return int(word) if word.isdigit() else NUMBER_WORDS[word.lower()]
+    word = word.lower()
+    if word.isdigit():
+        return int(word)
+    if word in NUMBER_WORDS:
+        return NUMBER_WORDS[word]
+    return next(n for n, stem in enumerate(("перш", "друг", "трет", "четверт", "п'ят", "шост", "сьом", "восьм",
+                                            "дев'ят", "десят"), start=1) if stem in word)
+
+
+def language(text: str) -> str:
+    """'uk' for a question in Cyrillic (Parakeet writes Ukrainian in Cyrillic), else 'en'."""
+    return "uk" if CYRILLIC.search(text) else "en"
+
+
+def tidy(text: str) -> str:
+    """One apostrophe for Ukrainian (п'ять, not п’ять or пʼять), so the number words match."""
+    return re.sub(r"[’ʼ`]", "'", text)
 
 
 @dataclass
@@ -66,16 +114,23 @@ class Slots:
     vehicle: str | None = None
     triage: str | None = None
     capability: str | None = None
+    lang: str = "en"  # language of the question, and of the answer
+
+
+def is_ambulance(word: str) -> bool:
+    return re.fullmatch(AMBULANCE, word, re.I) is not None
 
 
 def read_slots(text: str) -> Slots:
-    slots = Slots()
-    if m := CASUALTY_RE.search(text):
+    text = tidy(text)
+    slots = Slots(lang=language(text))
+    if m := CASUALTY_RE.search(text) or CASUALTY_FIRST_RE.search(text):
         slots.casualty = f"CAS-{number(m[1])}"
     if m := VEHICLE_RE.search(text):
-        kind = "AMB" if m[1].lower().startswith("amb") else "UGV"
-        slots.vehicle = f"{kind}-{number(m[2])}"
-    if m := TRIAGE_RE.search(text):
+        slots.vehicle = f"{'AMB' if is_ambulance(m[1]) else 'UGV'}-{number(m[2])}"
+    elif m := VEHICLE_FIRST_RE.search(text):
+        slots.vehicle = f"{'AMB' if is_ambulance(m[2]) else 'UGV'}-{number(m[1])}"
+    if m := TRIAGE_RE.search(text) or TRIAGE_FIRST_RE.search(text):
         slots.triage = f"T{number(m[1])}"
     else:
         slots.triage = next((t for w, t in TRIAGE_WORDS.items() if re.search(rf"\b{w}\b", text, re.I)), None)
@@ -84,11 +139,14 @@ def read_slots(text: str) -> Slots:
 
 
 def normalise(text: str) -> str:
-    """The question as the examples are written: ids spelled one way, so "CAS-3" and "cass three" embed alike."""
+    """The question with ids spelled one way, so "CAS-3", "cass three" and "пораненого номер три" embed alike."""
+    text = tidy(text)
     text = CASUALTY_RE.sub(lambda m: f"casualty {number(m[1])}", text)
-    text = VEHICLE_RE.sub(lambda m: ("ambulance " if m[1].lower().startswith("amb") else "UGV ") + str(number(m[2])),
-                          text)
+    text = CASUALTY_FIRST_RE.sub(lambda m: f"casualty {number(m[1])}", text)
+    text = VEHICLE_RE.sub(lambda m: f"{'ambulance' if is_ambulance(m[1]) else 'UGV'} {number(m[2])}", text)
+    text = VEHICLE_FIRST_RE.sub(lambda m: f"{'ambulance' if is_ambulance(m[2]) else 'UGV'} {number(m[1])}", text)
     text = TRIAGE_RE.sub(lambda m: f"T{number(m[1])}", text)
+    text = TRIAGE_FIRST_RE.sub(lambda m: f"T{number(m[1])}", text)
     return text.strip().lower()
 
 
@@ -299,14 +357,14 @@ class Intent:
     handler: Callable[[World, Slots], Answer]
     needs: str | None = None  # slot the question must name, e.g. "casualty"
 
+    def title_in(self, lang: str) -> str:
+        return UK_TITLES.get(self.name, self.title) if lang == "uk" else self.title
+
+    def examples_in(self, lang: str) -> list[str]:
+        return UK_EXAMPLES.get(self.name, []) if lang == "uk" else self.examples
+
 
 INTENTS: list[Intent] = []
-ASK_FOR = {
-    "casualty": "Which casualty do you mean? Say for example \"casualty 3\".",
-    "vehicle": "Which vehicle do you mean? Say for example \"UGV 1\" or \"ambulance 2\".",
-    "triage": "Which triage category? Say for example \"T1\".",
-    "capability": "Which capability? For example surgery, ICU, stabilisation or first aid.",
-}
 
 
 def intent(name: str, title: str, examples: list[str], needs: str | None = None):
@@ -316,23 +374,37 @@ def intent(name: str, title: str, examples: list[str], needs: str | None = None)
     return register
 
 
+def tr(lang: str, key: str, **kw) -> str:
+    """A sentence from voice_text.TEXT in the question's language."""
+    return TEXT[key][lang == "uk"].format(**kw)
+
+
+def labels(lang: str, *keys: str) -> list[str]:
+    return [LABELS[k][lang == "uk"] for k in keys]
+
+
+def value(lang: str, v) -> str:
+    """A value from the graph (status, mobility, vehicle type), in Ukrainian when asked in Ukrainian."""
+    return UK_VALUES.get(v, v) if lang == "uk" and isinstance(v, str) else v
+
+
 def minutes_since(t: datetime | None, now: datetime) -> float | None:
     return None if t is None else max(0.0, (now - t).total_seconds() / 60)
 
 
-def duration(minutes: float | None) -> str:
+def duration(minutes: float | None, lang: str = "en") -> str:
     if minutes is None:
-        return "unknown"
+        return tr(lang, "unknown")
     m = round(minutes)
-    return f"{m // 60}h {m % 60:02d}m" if m >= 60 else f"{m}m"
+    return tr(lang, "hours", h=m // 60, m=m % 60) if m >= 60 else tr(lang, "minutes", m=m)
 
 
 def clock(t: datetime | None) -> str:
     return t.strftime("%H:%MZ") if t else "--:--"
 
 
-def km(metres: float) -> str:
-    return f"{metres / 1000:.1f} km"
+def km(metres: float, lang: str = "en") -> str:
+    return tr(lang, "km", km=metres / 1000)
 
 
 def active(casualties: list[Casualty]) -> list[Casualty]:
@@ -345,42 +417,49 @@ def triaged(c: Casualty) -> bool:
     return c.triage in TRIAGE_ORDER
 
 
-def plan_of(c: Casualty, now: datetime) -> str:
+def plan_of(c: Casualty, now: datetime, lang: str = "en") -> str:
     if c.mission and c.status == "in_transit":
-        return f"on board {c.vehicle or '?'} ({c.mission}) to {c.destination or '?'}"
+        return tr(lang, "plan_on_board", vid=c.vehicle or "?", mid=c.mission, dest=c.destination or "?")
     if c.mission:
-        eta = f", pickup {clock(c.pickup_eta)}" if c.pickup_eta else (
-            f", trip {duration(c.trip_min)}" if c.trip_min else "")
-        return f"{c.mission}: {c.vehicle or '?'} to {c.destination or '?'}{eta}"
+        eta = tr(lang, "plan_pickup", t=clock(c.pickup_eta)) if c.pickup_eta else (
+            tr(lang, "plan_trip", d=duration(c.trip_min, lang)) if c.trip_min else "")
+        return tr(lang, "plan_mission", mid=c.mission, vid=c.vehicle or "?", dest=c.destination or "?", eta=eta)
     if c.held_at:
-        return f"at {c.held_at}, waiting for an ambulance"
-    return {"no_resource": "NO VEHICLE AVAILABLE", "awaiting_pickup": "awaiting a vehicle",
-            "reported": "NOT TRIAGED YET"}.get(c.status, c.status)
+        return tr(lang, "plan_relay", fid=c.held_at)
+    key = {"no_resource": "plan_no_resource", "awaiting_pickup": "plan_awaiting", "reported": "plan_reported"}
+    return tr(lang, key[c.status]) if c.status in key else value(lang, c.status)
 
 
-def where(world: World, lat: float, lon: float) -> str:
+def where(world: World, lat: float, lon: float, lang: str = "en") -> str:
     """Straight-line distance to the nearest medical point, as a spoken landmark."""
     f = min(world.facilities, key=lambda f: haversine_m((lat, lon), (f.lat, f.lon)), default=None)
     if f is None:
         return f"{lat:.4f}, {lon:.4f}"
     metres = haversine_m((lat, lon), (f.lat, f.lon))
-    return f"at {f.id}" if metres < AT_POINT_M else f"{km(metres)} from {f.id}"
+    return tr(lang, "at_point", fid=f.id) if metres < AT_POINT_M else \
+        tr(lang, "from_point", dist=km(metres, lang), fid=f.id)
 
 
-CASUALTY_COLUMNS = ["Casualty", "Triage", "Mobility", "Waiting", "Plan"]
+def waited(c: Casualty, world: World, lang: str) -> str:
+    return duration(minutes_since(c.injured_at, world.now), lang)
 
 
-def casualty_row(c: Casualty, now: datetime) -> list:
-    return [c.id, c.triage or "untriaged", c.mobility, duration(minutes_since(c.injured_at, now)), plan_of(c, now)]
+def casualty_row(c: Casualty, world: World, lang: str) -> list:
+    return [c.id, c.triage or tr(lang, "untriaged"), value(lang, c.mobility), waited(c, world, lang),
+            plan_of(c, world.now, lang)]
 
 
-def casualty_table(world: World, casualties: list[Casualty], say: str) -> Answer:
-    return Answer(say, CASUALTY_COLUMNS, [casualty_row(c, world.now) for c in casualties],
-                  [c.nid for c in casualties])
+def casualty_table(world: World, casualties: list[Casualty], say: str, lang: str) -> Answer:
+    return Answer(say, labels(lang, "casualty", "triage", "mobility", "waiting", "plan"),
+                  [casualty_row(c, world, lang) for c in casualties], [c.nid for c in casualties])
 
 
-def names(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+def names(items: list[str], lang: str = "en") -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + tr(lang, "and") + items[-1]
+
+
+def ids(items, lang: str) -> str:
+    return names([x.id for x in items], lang)
 
 
 @intent("most_critical", "Most critical casualty", [
@@ -397,21 +476,21 @@ def names(items: list[str]) -> str:
     "which patient is the sickest",
     "who is the worst off",
 ])
-def most_critical(world: World, _: Slots) -> Answer:
+def most_critical(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = active(world.casualties)
     ranked = [c for c in q if triaged(c)]
     untriaged = [c for c in q if not triaged(c)]
     if not q:
-        return Answer("There are no active casualties on the map.")
+        return Answer(tr(lang, "no_active"))
     if not ranked:
-        return casualty_table(world, untriaged, (
-            f"No casualty has been triaged yet. {len(untriaged)} reports wait for triage: "
-            f"{names([c.id for c in untriaged])}."))
+        return casualty_table(world, untriaged, tr(lang, "none_triaged", n=len(untriaged), ids=ids(untriaged, lang)),
+                              lang)
     c = ranked[0]
-    note = f" {len(untriaged)} not triaged yet: {names([u.id for u in untriaged])}." if untriaged else ""
-    return casualty_table(world, ranked[:3] + untriaged, (
-        f"{c.id} is the most critical: {c.triage}, {c.mobility or 'mobility unknown'}, waiting "
-        f"{duration(minutes_since(c.injured_at, world.now))}, {plan_of(c, world.now)}.{note}"))
+    note = tr(lang, "untriaged_note", n=len(untriaged), ids=ids(untriaged, lang)) if untriaged else ""
+    return casualty_table(world, ranked[:3] + untriaged, tr(
+        lang, "most_critical", id=c.id, triage=c.triage, mobility=value(lang, c.mobility) or tr(lang, "mobility_unknown"),
+        wait=waited(c, world, lang), plan=plan_of(c, world.now, lang), note=note), lang)
 
 
 @intent("queue", "All casualties by priority", [
@@ -426,11 +505,11 @@ def most_critical(world: World, _: Slots) -> Answer:
     "who is waiting for evacuation",
     "give me the list of the wounded",
 ])
-def queue(world: World, _: Slots) -> Answer:
+def queue(world: World, slots: Slots) -> Answer:
     q = active(world.casualties)
     if not q:
-        return Answer("There are no active casualties on the map.")
-    return casualty_table(world, q, f"{len(q)} casualties, most urgent first: {names([c.id for c in q])}.")
+        return Answer(tr(slots.lang, "no_active"))
+    return casualty_table(world, q, tr(slots.lang, "queue", n=len(q), ids=ids(q, slots.lang)), slots.lang)
 
 
 @intent("triage_count", "Casualty count by triage", [
@@ -444,20 +523,22 @@ def queue(world: World, _: Slots) -> Answer:
     "how many T2s",
 ])
 def triage_count(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = active(world.casualties)
     counts: dict[str, list[Casualty]] = {}
     for c in q:
         counts.setdefault(c.triage, []).append(c)
-    rows = [[t or "untriaged", len(cs), ", ".join(c.id for c in cs)] for t, cs in sorted(counts.items(),
-                                                                          key=lambda kv: TRIAGE_ORDER.get(kv[0], 9))]
+    rows = [[t or tr(lang, "untriaged"), len(cs), ", ".join(c.id for c in cs)]
+            for t, cs in sorted(counts.items(), key=lambda kv: TRIAGE_ORDER.get(kv[0], 9))]
     if slots.triage:
         n = len(counts.get(slots.triage, []))
-        say = f"{n} {slots.triage} casualt{'y' if n == 1 else 'ies'}, out of {len(q)} active."
+        say = tr(lang, "count_one", n=n, triage=slots.triage, noun="casualty" if n == 1 else "casualties",
+                 total=len(q))
         highlight = [c.nid for c in counts.get(slots.triage, [])]
     else:
-        say = f"{len(q)} active casualties: " + ", ".join(f"{r[1]} {r[0]}" for r in rows) + "."
+        say = tr(lang, "count_all", total=len(q), breakdown=", ".join(f"{r[1]} {r[0]}" for r in rows))
         highlight = [c.nid for c in q]
-    return Answer(say, ["Triage", "Count", "Casualties"], rows, highlight)
+    return Answer(say, labels(lang, "triage", "count", "casualties"), rows, highlight)
 
 
 @intent("by_triage", "Casualties of one triage category", [
@@ -473,8 +554,9 @@ def triage_count(world: World, slots: Slots) -> Answer:
 def by_triage(world: World, slots: Slots) -> Answer:
     cs = [c for c in active(world.casualties) if c.triage == slots.triage]
     if not cs:
-        return Answer(f"There are no active {slots.triage} casualties.")
-    return casualty_table(world, cs, f"{len(cs)} {slots.triage}: {names([c.id for c in cs])}.")
+        return Answer(tr(slots.lang, "none_of_triage", triage=slots.triage))
+    return casualty_table(world, cs, tr(slots.lang, "by_triage", n=len(cs), triage=slots.triage,
+                                        ids=ids(cs, slots.lang)), slots.lang)
 
 
 @intent("longest_waiting", "Longest waiting", [
@@ -486,13 +568,14 @@ def by_triage(world: World, slots: Slots) -> Answer:
     "which casualty has been waiting the most time",
     "oldest casualty",
 ])
-def longest_waiting(world: World, _: Slots) -> Answer:
+def longest_waiting(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = sorted(active(world.casualties), key=lambda c: c.injured_at or world.now)
     if not q:
-        return Answer("There are no active casualties on the map.")
+        return Answer(tr(lang, "no_active"))
     c = q[0]
-    return casualty_table(world, q, (f"{c.id} ({c.triage or 'not triaged'}) has waited longest: "
-                                     f"{duration(minutes_since(c.injured_at, world.now))} since injury."))
+    return casualty_table(world, q, tr(lang, "longest", id=c.id, triage=c.triage or tr(lang, "not_triaged"),
+                                       wait=waited(c, world, lang)), lang)
 
 
 @intent("golden_hour", "Past the golden hour", [
@@ -503,15 +586,17 @@ def longest_waiting(world: World, _: Slots) -> Answer:
     "which casualties are running out of time",
     "who is outside the golden hour",
     "who is going to miss the golden hour",
+    "has anyone been waiting over an hour",
 ])
-def golden_hour(world: World, _: Slots) -> Answer:
+def golden_hour(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = active(world.casualties)
     late = [c for c in q if (minutes_since(c.injured_at, world.now) or 0) >= GOLDEN_HOUR_MIN]
     if not late:
-        return casualty_table(world, q, "Nobody is past the golden hour yet.")
-    t1 = [c.id for c in late if c.triage == "T1"]
-    return casualty_table(world, late, (f"{len(late)} of {len(q)} casualties are past the golden hour"
-                                        + (f", including T1 {names(t1)}." if t1 else ".")))
+        return casualty_table(world, q, tr(lang, "golden_none"), lang)
+    t1 = [c for c in late if c.triage == "T1"]
+    return casualty_table(world, late, tr(lang, "golden", n=len(late), total=len(q),
+                                          t1=tr(lang, "golden_t1", ids=ids(t1, lang)) if t1 else ""), lang)
 
 
 @intent("casualty_status", "One casualty", [
@@ -526,20 +611,23 @@ def golden_hour(world: World, _: Slots) -> Answer:
     "show me casualty 6",
 ], needs="casualty")
 def casualty_status(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     c = world.casualty(slots.casualty)
     if c is None:
-        return Answer(f"I can't find {slots.casualty} on the map.")
-    rows = [["Triage", c.triage or "not triaged yet"], ["Mobility", c.mobility], ["Injuries", c.injuries],
-            ["Injured", clock(c.injured_at)], ["Waiting", duration(minutes_since(c.injured_at, world.now))],
-            ["Status", c.status], ["Plan", plan_of(c, world.now)], ["Location", where(world, c.lat, c.lon)]]
-    rows = [r for r in rows if r[1]]
+        return Answer(tr(lang, "cant_find", id=slots.casualty))
+    rows = [(*labels(lang, "triage"), c.triage or tr(lang, "not_triaged_yet")),
+            (*labels(lang, "mobility"), value(lang, c.mobility)), (*labels(lang, "injuries"), c.injuries),
+            (*labels(lang, "injured"), clock(c.injured_at)), (*labels(lang, "waiting"), waited(c, world, lang)),
+            (*labels(lang, "status"), value(lang, c.status)), (*labels(lang, "plan"), plan_of(c, world.now, lang)),
+            (*labels(lang, "location"), where(world, c.lat, c.lon, lang))]
+    rows = [list(r) for r in rows if r[1]]
     if c.status in DONE:
-        say = f"{c.id} is {c.status}."
+        say = tr(lang, "status_done", id=c.id, status=value(lang, c.status))
     elif not triaged(c):
-        say = f"{c.id} is not triaged yet" + (f": {c.injuries}." if c.injuries else ".")
+        say = tr(lang, "status_untriaged", id=c.id, injuries=f": {c.injuries}" if c.injuries else "")
     else:
-        say = (f"{c.id}: {c.triage}, {c.mobility}, waiting {duration(minutes_since(c.injured_at, world.now))}, "
-               f"{plan_of(c, world.now)}.")
+        say = tr(lang, "status", id=c.id, triage=c.triage, mobility=value(lang, c.mobility),
+                 wait=waited(c, world, lang), plan=plan_of(c, world.now, lang))
     return Answer(say, [c.id, ""], rows, [c.nid])
 
 
@@ -553,34 +641,36 @@ def casualty_status(world: World, slots: Slots) -> Answer:
     "which vehicle is going to casualty 2",
 ], needs="casualty")
 def casualty_eta(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     c = world.casualty(slots.casualty)
     if c is None:
-        return Answer(f"I can't find {slots.casualty} on the map.")
+        return Answer(tr(lang, "cant_find", id=slots.casualty))
     if c.status in DONE:
-        return Answer(f"{c.id} is {c.status}.", highlight=[c.nid])
+        return Answer(tr(lang, "status_done", id=c.id, status=value(lang, c.status)), highlight=[c.nid])
     if not triaged(c):
-        return Answer(f"{c.id} is not triaged yet; it is dispatched once a medic triages it.", highlight=[c.nid])
+        return Answer(tr(lang, "eta_untriaged", id=c.id), highlight=[c.nid])
     if not c.mission:
-        return Answer(f"Nobody is tasked to {c.id} yet ({plan_of(c, world.now)}). Ask for the nearest vehicle to "
-                      f"{c.id}.", highlight=[c.nid])
+        return Answer(tr(lang, "eta_none", id=c.id, plan=plan_of(c, world.now, lang)), highlight=[c.nid])
     v, f = world.vehicle(c.vehicle or ""), world.facility(c.destination or "")
     m = next((m for m in world.missions if m.id == c.mission), None)
+    lit = [c.nid] + [x.nid for x in (v, f) if x]
+    common = {"vid": c.vehicle, "mid": c.mission, "id": c.id, "dest": c.destination}
     if c.status == "in_transit":
-        arrival = f", arriving {clock(m.eta)}" if m and m.eta else ""
-        timing = f"has {c.id} on board"
-        return Answer(f"{c.vehicle} on {c.mission} {timing}, to {c.destination}{arrival}.",
-                      ["Mission", "Vehicle", "Status", "Destination", "Arrival"],
-                      [[c.mission, c.vehicle, "on board", c.destination, clock(m.eta) if m and m.eta else ""]],
-                      [c.nid] + [x.nid for x in (v, f) if x])
+        arrival = tr(lang, "eta_arrival", t=clock(m.eta)) if m and m.eta else ""
+        return Answer(tr(lang, "eta_on_board", arrival=arrival, **common),
+                      labels(lang, "mission", "vehicle", "status", "destination", "arrival"),
+                      [[c.mission, c.vehicle, *labels(lang, "on_board"), c.destination,
+                        clock(m.eta) if m and m.eta else ""]], lit)
     if c.pickup_eta:
-        timing = f"picks {c.id} up at {clock(c.pickup_eta)} (in {duration(minutes_since(world.now, c.pickup_eta))})"
+        say = tr(lang, "eta_pickup", t=clock(c.pickup_eta), wait=duration(minutes_since(world.now, c.pickup_eta), lang),
+                 **common)
+    elif c.trip_min:
+        say = tr(lang, "eta_trip", trip=duration(c.trip_min, lang), **common)
     else:
-        timing = f"is on a {duration(c.trip_min)} trip with {c.id}" if c.trip_min else f"is going to {c.id}"
-    return Answer(f"{c.vehicle} on {c.mission} {timing}, to {c.destination}.",
-                  ["Mission", "Vehicle", "Pickup", "Destination"],
-                  [[c.mission, c.vehicle, clock(c.pickup_eta) if c.pickup_eta else duration(c.trip_min),
-                    c.destination]],
-                  [c.nid] + [x.nid for x in (v, f) if x])
+        say = tr(lang, "eta_going", **common)
+    return Answer(say, labels(lang, "mission", "vehicle", "pickup", "destination"),
+                  [[c.mission, c.vehicle, clock(c.pickup_eta) if c.pickup_eta else duration(c.trip_min, lang),
+                    c.destination]], lit)
 
 
 @intent("unassigned", "Casualties without a vehicle", [
@@ -594,16 +684,18 @@ def casualty_eta(world: World, slots: Slots) -> Answer:
     "are there casualties nobody is going for",
     "which casualties are still uncovered",
 ])
-def unassigned(world: World, _: Slots) -> Answer:
+def unassigned(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = active(world.casualties)
     cs = [c for c in q if triaged(c) and not c.mission]
     untriaged = [c for c in q if not triaged(c)]
-    note = f" {len(untriaged)} more not triaged yet: {names([c.id for c in untriaged])}." if untriaged else ""
+    note = tr(lang, "untriaged_note", n=len(untriaged), ids=ids(untriaged, lang)) if untriaged else ""
     if not cs:
-        return casualty_table(world, untriaged, "Every triaged casualty has a vehicle tasked." + note)
-    stuck = [c.id for c in cs if c.status == "no_resource"]
-    return casualty_table(world, cs + untriaged, f"{len(cs)} triaged without a vehicle: {names([c.id for c in cs])}"
-                          + (f". No resource for {names(stuck)}." if stuck else ".") + note)
+        return casualty_table(world, untriaged, tr(lang, "all_tasked") + note, lang)
+    stuck = [c for c in cs if c.status == "no_resource"]
+    return casualty_table(world, cs + untriaged, tr(
+        lang, "unassigned", n=len(cs), ids=ids(cs, lang), note=note,
+        stuck=tr(lang, "no_resource_for", ids=ids(stuck, lang)) if stuck else tr(lang, "end")), lang)
 
 
 @intent("stretcher", "Stretcher cases", [
@@ -614,11 +706,11 @@ def unassigned(world: World, _: Slots) -> Answer:
     "which casualties are on litters",
     "how many stretcher patients",
 ])
-def stretcher(world: World, _: Slots) -> Answer:
+def stretcher(world: World, slots: Slots) -> Answer:
     cs = [c for c in active(world.casualties) if c.mobility == "litter"]
     if not cs:
-        return Answer("No active casualty needs a stretcher.")
-    return casualty_table(world, cs, f"{len(cs)} stretcher cases: {names([c.id for c in cs])}.")
+        return Answer(tr(slots.lang, "no_stretcher"))
+    return casualty_table(world, cs, tr(slots.lang, "stretcher", n=len(cs), ids=ids(cs, slots.lang)), slots.lang)
 
 
 @intent("walking", "Walking wounded", [
@@ -629,22 +721,24 @@ def stretcher(world: World, _: Slots) -> Answer:
     "who can walk to the collection point",
     "how many walking wounded",
 ])
-def walking(world: World, _: Slots) -> Answer:
+def walking(world: World, slots: Slots) -> Answer:
     cs = [c for c in active(world.casualties) if c.mobility == "ambulatory"]
     if not cs:
-        return Answer("No active casualty can walk.")
-    return casualty_table(world, cs, f"{len(cs)} can walk: {names([c.id for c in cs])}.")
-
-
-VEHICLE_COLUMNS = ["Vehicle", "Type", "Status", "Battery", "Range left", "Mission"]
+        return Answer(tr(slots.lang, "no_walking"))
+    return casualty_table(world, cs, tr(slots.lang, "walking", n=len(cs), ids=ids(cs, slots.lang)), slots.lang)
 
 
 def range_left(v: Vehicle) -> float:
     return v.range_km * v.battery_pct / 100
 
 
-def vehicle_row(v: Vehicle) -> list:
-    return [v.id, v.type, v.status, f"{v.battery_pct:.0f}%", f"{range_left(v):.0f} km", v.mission or ""]
+def vehicle_columns(lang: str) -> list[str]:
+    return labels(lang, "vehicle", "type", "status", "battery", "range_left", "mission")
+
+
+def vehicle_row(v: Vehicle, lang: str) -> list:
+    return [v.id, value(lang, v.type), value(lang, v.status), f"{v.battery_pct:.0f}%",
+            tr(lang, "km_whole", km=range_left(v)), v.mission or ""]
 
 
 @intent("vehicles", "Available vehicles", [
@@ -657,12 +751,12 @@ def vehicle_row(v: Vehicle) -> list:
     "show me all vehicles",
     "what is the status of the fleet",
 ])
-def vehicles(world: World, _: Slots) -> Answer:
-    idle = [v.id for v in world.vehicles if v.status == "idle"]
-    say = f"{len(idle)} of {len(world.vehicles)} vehicles idle: {names(idle)}." if idle else \
-        f"No vehicle is idle; all {len(world.vehicles)} are tasked."
-    return Answer(say, VEHICLE_COLUMNS, [vehicle_row(v) for v in world.vehicles],
-                  [v.nid for v in world.vehicles if v.status == "idle"])
+def vehicles(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
+    idle = [v for v in world.vehicles if v.status == "idle"]
+    say = tr(lang, "vehicles_idle", n=len(idle), total=len(world.vehicles), ids=ids(idle, lang)) if idle else \
+        tr(lang, "vehicles_none", total=len(world.vehicles))
+    return Answer(say, vehicle_columns(lang), [vehicle_row(v, lang) for v in world.vehicles], [v.nid for v in idle])
 
 
 @intent("vehicle_status", "One vehicle", [
@@ -675,13 +769,16 @@ def vehicles(world: World, _: Slots) -> Answer:
     "how far can UGV 2 go",
 ], needs="vehicle")
 def vehicle_status(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     v = world.vehicle(slots.vehicle)
     if v is None:
-        return Answer(f"I can't find {slots.vehicle} on the map.")
+        return Answer(tr(lang, "cant_find", id=slots.vehicle))
     m = next((m for m in world.missions if m.id == v.mission), None)
-    doing = f"on {m.id} for {names(m.casualties)} to {m.destination}" if m else v.status
-    return Answer(f"{v.id} is {doing}, {v.battery_pct:.0f}% battery, {range_left(v):.0f} km range left, "
-                  f"{where(world, v.lat, v.lon)}.", VEHICLE_COLUMNS, [vehicle_row(v)], [v.nid])
+    doing = tr(lang, "vehicle_mission", mid=m.id, ids=names(m.casualties, lang), dest=m.destination) if m else \
+        value(lang, v.status)
+    return Answer(tr(lang, "vehicle_status", id=v.id, doing=doing, battery=f"{v.battery_pct:.0f}",
+                     range=tr(lang, "km_whole", km=range_left(v)), where=where(world, v.lat, v.lon, lang)),
+                  vehicle_columns(lang), [vehicle_row(v, lang)], [v.nid])
 
 
 @intent("battery", "Battery and range", [
@@ -692,12 +789,14 @@ def vehicle_status(world: World, slots: Slots) -> Answer:
     "do any vehicles need charging",
     "what is the range of the robots",
 ])
-def battery(world: World, _: Slots) -> Answer:
+def battery(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     vs = sorted(world.vehicles, key=lambda v: v.battery_pct)
-    low = [v.id for v in vs if v.battery_pct < LOW_BATTERY_PCT]
-    say = (f"Low battery: {names(low)}." if low else "No vehicle is below "
-           f"{LOW_BATTERY_PCT}% battery.") + (f" Lowest is {vs[0].id} at {vs[0].battery_pct:.0f}%." if vs else "")
-    return Answer(say, VEHICLE_COLUMNS, [vehicle_row(v) for v in vs], [v.nid for v in vs if v.id in low])
+    low = [v for v in vs if v.battery_pct < LOW_BATTERY_PCT]
+    say = tr(lang, "low_battery", ids=ids(low, lang)) if low else tr(lang, "no_low_battery", pct=LOW_BATTERY_PCT)
+    if vs:
+        say += tr(lang, "lowest_battery", id=vs[0].id, pct=f"{vs[0].battery_pct:.0f}")
+    return Answer(say, vehicle_columns(lang), [vehicle_row(v, lang) for v in vs], [v.nid for v in low])
 
 
 def can_carry(v: Vehicle, c: Casualty) -> bool:
@@ -717,31 +816,34 @@ def can_carry(v: Vehicle, c: Casualty) -> bool:
     "who can pick up casualty 3",
 ], needs="casualty")
 def nearest_vehicle(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     c = world.casualty(slots.casualty)
     if c is None:
-        return Answer(f"I can't find {slots.casualty} on the map.")
+        return Answer(tr(lang, "cant_find", id=slots.casualty))
+    if c.status in DONE:
+        return Answer(tr(lang, "status_done", id=c.id, status=value(lang, c.status)), highlight=[c.nid])
     if c.junction is None:
-        return Answer(f"{c.id} is not linked to the road network.", highlight=[c.nid])
+        return Answer(tr(lang, "not_on_roads", id=c.id), highlight=[c.nid])
     options = []
     for v in world.vehicles:
         r = (route(world.roads(), v.junction, c.junction, v.type, v.speed_kmh, v.max_threat)
              if v.junction is not None else None)
         options.append((v, r))
     options.sort(key=lambda o: (o[1] is None, o[1][1] if o[1] else math.inf))
-    rows = [[v.id, v.status, f"{r[1]:.0f} min" if r else "no route", f"{r[2]:.1f} km" if r else "",
-             "yes" if can_carry(v, c) else "no", "yes" if r and r[2] <= range_left(v) else "no"]
+    yes_no = lambda ok: tr(lang, "yes" if ok else "no")  # noqa: E731
+    rows = [[v.id, value(lang, v.status), tr(lang, "min", m=f"{r[1]:.0f}") if r else tr(lang, "no_route"),
+             km(r[2] * 1000, lang) if r else "", yes_no(can_carry(v, c)), yes_no(r and r[2] <= range_left(v))]
             for v, r in options]
-    fit = [(v, r) for v, r in options if r and v.status == "idle" and can_carry(v, c)
-           and r[2] <= range_left(v)]
+    columns = labels(lang, "vehicle", "status", "time", "distance", "can_carry", "in_range")
+    fit = [(v, r) for v, r in options if r and v.status == "idle" and can_carry(v, c) and r[2] <= range_left(v)]
     if fit:
         v, r = fit[0]
-        say = f"{v.id} is the fastest idle vehicle for {c.id}: {r[1]:.0f} min by road ({r[2]:.1f} km)."
-        return Answer(say, ["Vehicle", "Status", "Time", "Distance", "Can carry", "In range"], rows,
+        return Answer(tr(lang, "fastest", vid=v.id, id=c.id, min=f"{r[1]:.0f}", km=f"{r[2]:.1f}"), columns, rows,
                       [c.nid, v.nid], [r[0]])
     busy = next(((v, r) for v, r in options if r and can_carry(v, c) and r[2] <= range_left(v)), None)
-    later = f" Fastest tasked: {busy[0].id} ({busy[0].mission}), {busy[1][1]:.0f} min." if busy else ""
-    return Answer(f"No idle vehicle can reach and carry {c.id} ({c.mobility}).{later}",
-                  ["Vehicle", "Status", "Time", "Distance", "Can carry", "In range"], rows, [c.nid])
+    later = tr(lang, "fastest_busy", vid=busy[0].id, mid=busy[0].mission, min=f"{busy[1][1]:.0f}") if busy else ""
+    return Answer(tr(lang, "none_fit", id=c.id, mobility=value(lang, c.mobility), later=later), columns, rows,
+                  [c.nid])
 
 
 @intent("nearest_facility", "Where a casualty should go", [
@@ -754,11 +856,14 @@ def nearest_vehicle(world: World, slots: Slots) -> Answer:
     "which hospital can take casualty 3",
 ], needs="casualty")
 def nearest_facility(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     c = world.casualty(slots.casualty)
     if c is None:
-        return Answer(f"I can't find {slots.casualty} on the map.")
+        return Answer(tr(lang, "cant_find", id=slots.casualty))
+    if c.status in DONE:
+        return Answer(tr(lang, "status_done", id=c.id, status=value(lang, c.status)), highlight=[c.nid])
     if c.junction is None:
-        return Answer(f"{c.id} is not linked to the road network.", highlight=[c.nid])
+        return Answer(tr(lang, "not_on_roads", id=c.id), highlight=[c.nid])
     # Where the dispatcher sends ambulances (routing.DESTINATION_TYPES), on roads within their threat limit
     ambulances = [v for v in world.vehicles if v.type == "ambulance"]
     max_threat = max((v.max_threat for v in ambulances), default=1.0)
@@ -769,23 +874,24 @@ def nearest_facility(world: World, slots: Slots) -> Answer:
         r = route(world.roads(), c.junction, f.junction, "ambulance", DEFAULT_SPEED_KMH["ambulance"], max_threat)
         options.append((f, r))
     options.sort(key=lambda o: (o[1] is None, o[1][1] if o[1] else math.inf))
-    rows = [[f.id, f.name, f.state, f.free_beds, f"{r[1]:.0f} min" if r else "no route",
-             f"{r[2]:.1f} km" if r else ""] for f, r in options]
-    columns = ["Point", "Name", "State", "Free beds", "Ambulance time", "Distance"]
+    rows = [[f.id, f.name, value(lang, f.state), f.free_beds,
+             tr(lang, "min", m=f"{r[1]:.0f}") if r else tr(lang, "no_route"), km(r[2] * 1000, lang) if r else ""]
+            for f, r in options]
+    columns = labels(lang, "point", "name", "state", "free_beds", "ambulance_time", "distance")
     fit = [(f, r) for f, r in options if r and f.state == "operational" and f.free_beds > 0]
     if not fit:
-        return Answer(f"No operational Role 1 or higher with a free bed can be reached from {c.id}.", columns,
-                      rows, [c.nid])
+        return Answer(tr(lang, "no_facility", id=c.id), columns, rows, [c.nid])
     f, r = fit[0]
-    return Answer(f"Nearest Role 1 or higher with a free bed for {c.id}: {f.name} ({f.id}), {r[1]:.0f} min by "
-                  f"ambulance, {f.free_beds} beds free.", columns, rows, [c.nid, f.nid], [r[0]])
+    return Answer(tr(lang, "facility", id=c.id, name=f.name, fid=f.id, min=f"{r[1]:.0f}", beds=f.free_beds),
+                  columns, rows, [c.nid, f.nid], [r[0]])
 
 
-FACILITY_COLUMNS = ["Point", "Name", "Type", "State", "Free beds", "Medics"]
+def facility_columns(lang: str) -> list[str]:
+    return labels(lang, "point", "name", "type", "state", "free_beds", "medics")
 
 
-def facility_row(f: Facility) -> list:
-    return [f.id, f.name, f.type, f.state, f.free_beds, f.medics]
+def facility_row(f: Facility, lang: str) -> list:
+    return [f.id, f.name, f.type, value(lang, f.state), f.free_beds, f.medics]
 
 
 @intent("beds", "Free beds", [
@@ -797,12 +903,12 @@ def facility_row(f: Facility) -> list:
     "is role 1 full",
     "capacity of the medical points",
 ])
-def beds(world: World, _: Slots) -> Answer:
+def beds(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     fs = sorted((f for f in world.facilities if f.free_beds > 0), key=lambda f: -f.free_beds)
-    total = sum(f.free_beds for f in fs)
-    return Answer(f"{total} free beds across {len(fs)} points" + (f"; most at {fs[0].id} ({fs[0].free_beds})."
-                                                                   if fs else "."),
-                  FACILITY_COLUMNS, [facility_row(f) for f in fs], [f.nid for f in fs])
+    most = tr(lang, "beds_most", fid=fs[0].id, beds=fs[0].free_beds) if fs else tr(lang, "end")
+    return Answer(tr(lang, "beds", total=sum(f.free_beds for f in fs), n=len(fs), most=most),
+                  facility_columns(lang), [facility_row(f, lang) for f in fs], [f.nid for f in fs])
 
 
 @intent("capability", "Points with a capability", [
@@ -815,12 +921,13 @@ def beds(world: World, _: Slots) -> Answer:
     "list facilities with a surgeon",
 ], needs="capability")
 def capability(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     fs = [f for f in world.facilities if slots.capability in f.capabilities]
-    label = slots.capability.replace("_", " ")
+    label = CAPABILITY_LABELS.get(slots.capability, (slots.capability,) * 2)[lang == "uk"]
     if not fs:
-        return Answer(f"No medical point on the map has {label}.")
-    return Answer(f"{label.capitalize()} at {names([f.id for f in fs])}.", FACILITY_COLUMNS,
-                  [facility_row(f) for f in fs], [f.nid for f in fs])
+        return Answer(tr(lang, "no_capability", label=label))
+    return Answer(tr(lang, "capability", label=label[:1].upper() + label[1:], ids=ids(fs, lang)),
+                  facility_columns(lang), [facility_row(f, lang) for f in fs], [f.nid for f in fs])
 
 
 @intent("medics", "Medics available", [
@@ -831,11 +938,12 @@ def capability(world: World, slots: Slots) -> Answer:
     "medical staff available",
     "how many doctors do we have",
 ])
-def medics(world: World, _: Slots) -> Answer:
+def medics(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     fs = sorted(world.facilities, key=lambda f: -f.medics)
-    return Answer(f"{sum(f.medics for f in fs)} medics available" + (f"; most at {fs[0].id} ({fs[0].medics})."
-                                                                       if fs else "."),
-                  FACILITY_COLUMNS, [facility_row(f) for f in fs], [f.nid for f in fs if f.medics > 0])
+    most = tr(lang, "medics_most", fid=fs[0].id, n=fs[0].medics) if fs else tr(lang, "end")
+    return Answer(tr(lang, "medics", total=sum(f.medics for f in fs), most=most), facility_columns(lang),
+                  [facility_row(f, lang) for f in fs], [f.nid for f in fs if f.medics > 0])
 
 
 @intent("missions", "Missions", [
@@ -847,16 +955,18 @@ def medics(world: World, _: Slots) -> Answer:
     "show me all evacuation missions",
     "what is in progress",
 ])
-def missions(world: World, _: Slots) -> Answer:
+def missions(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     ms = world.missions
     if not ms:
-        return Answer("There are no missions yet.")
-    rows = [[m.id, m.status, m.vehicle or "", ", ".join(m.casualties), m.destination or "",
-             clock(m.eta) if m.eta else duration(m.trip_min)] for m in ms]
+        return Answer(tr(lang, "no_missions"))
+    rows = [[m.id, value(lang, m.status), m.vehicle or "", ", ".join(m.casualties), m.destination or "",
+             clock(m.eta) if m.eta else duration(m.trip_min, lang)] for m in ms]
     nids = [m.nid for m in ms] + [x.nid for m in ms for x in
                                    [world.vehicle(m.vehicle or ""), world.facility(m.destination or "")] if x]
-    return Answer(f"{len(ms)} missions: " + "; ".join(f"{m.id} {m.vehicle} for {names(m.casualties)}" for m in ms)
-                  + ".", ["Mission", "Status", "Vehicle", "Casualties", "To", "ETA / trip"], rows, nids)
+    items = "; ".join(tr(lang, "mission_item", mid=m.id, vid=m.vehicle, ids=names(m.casualties, lang)) for m in ms)
+    return Answer(tr(lang, "missions", n=len(ms), list=items),
+                  labels(lang, "mission", "status", "vehicle", "casualties", "to", "eta_trip"), rows, nids)
 
 
 @intent("threats", "Threats", [
@@ -868,13 +978,15 @@ def missions(world: World, _: Slots) -> Answer:
     "what threats are on the map",
     "show me threats",
 ])
-def threats(world: World, _: Slots) -> Answer:
+def threats(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     act = [t for t in world.threats if t["active"]]
-    rows = [[t["id"], t["type"], t["level"], "active" if t["active"] else "inactive"] for t in world.threats]
-    say = (f"{len(act)} active threat{'s' if len(act) > 1 else ''}: "
-           + names([f"{t['id']} ({t['type']}, level {t['level']})" for t in act]) + ".") if act else \
-        "No active threats on the map."
-    return Answer(say, ["Threat", "Type", "Level", "State"], rows, [int(t["nid"]) for t in act])
+    rows = [[t["id"], value(lang, t["type"]), t["level"], *labels(lang, "active" if t["active"] else "inactive")]
+            for t in world.threats]
+    say = tr(lang, "threats", n=len(act), noun="threat" if len(act) == 1 else "threats", list=names(
+        [tr(lang, "threat_item", id=t["id"], type=value(lang, t["type"]), level=t["level"]) for t in act], lang)) \
+        if act else tr(lang, "no_threats")
+    return Answer(say, labels(lang, "threat", "type", "level", "state"), rows, [int(t["nid"]) for t in act])
 
 
 @intent("closed_roads", "Closed roads", [
@@ -885,17 +997,18 @@ def threats(world: World, _: Slots) -> Answer:
     "what roads can't we use",
     "show me blocked roads",
 ])
-def closed_roads(world: World, _: Slots) -> Answer:
+def closed_roads(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     ways: dict = {}
     for r in world.closed_roads:
         ways.setdefault(r["way"], r)
     if not ways:
-        return Answer("All roads are open.")
-    rows = [[w, r["highway"], "yes" if r["bridge"] else ""] for w, r in ways.items()]
+        return Answer(tr(lang, "roads_open"))
+    rows = [[w, r["highway"], tr(lang, "yes") if r["bridge"] else ""] for w, r in ways.items()]
     bridges = sum(1 for r in ways.values() if r["bridge"])
-    return Answer(f"{len(ways)} road{'s' if len(ways) > 1 else ''} closed" + (f", {bridges} of them bridges."
-                                                                            if bridges else "."),
-                  ["OSM way", "Class", "Bridge"], rows,
+    return Answer(tr(lang, "roads_closed", n=len(ways), noun="road" if len(ways) == 1 else "roads",
+                     bridges=tr(lang, "roads_bridges", b=bridges) if bridges else tr(lang, "end")),
+                  labels(lang, "osm_way", "class", "bridge"), rows,
                   paths=[[int(r["a"]), int(r["b"])] for r in world.closed_roads])
 
 
@@ -908,24 +1021,26 @@ def closed_roads(world: World, _: Slots) -> Answer:
     "what is the current situation",
     "give me an overview",
 ])
-def sitrep(world: World, _: Slots) -> Answer:
+def sitrep(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
     q = active(world.casualties)
     untriaged = [c for c in q if not triaged(c)]
     no_vehicle = [c for c in q if triaged(c) and not c.mission]
     late = [c for c in q if (minutes_since(c.injured_at, world.now) or 0) >= GOLDEN_HOUR_MIN]
     idle = [v for v in world.vehicles if v.status == "idle"]
-    rows = [["Active casualties", ", ".join(f"{sum(c.triage == t for c in q)} {t}" for t in ("T1", "T2", "T3"))],
-            ["Not triaged", names([c.id for c in untriaged]) if untriaged else "none"],
-            ["Triaged, no vehicle", names([c.id for c in no_vehicle]) if no_vehicle else "none"],
-            ["Past golden hour", names([c.id for c in late]) if late else "none"],
-            ["Vehicles idle", f"{len(idle)} of {len(world.vehicles)}"],
-            ["Missions under way", str(sum(m.status in LIVE_MISSION for m in world.missions))],
-            ["Free beds", str(sum(f.free_beds for f in world.facilities))],
-            ["Active threats", str(sum(1 for t in world.threats if t["active"]))],
-            ["Closed roads", str(len({r["way"] for r in world.closed_roads}))]]
-    say = (f"{len(q)} casualties, {len(untriaged)} not triaged, {len(no_vehicle)} triaged without a vehicle, "
-           f"{len(late)} past the golden hour. {len(idle)} vehicles idle.")
-    return Answer(say, [clock(world.now), "Now"], rows, [c.nid for c in untriaged + no_vehicle])
+    listed = lambda cs: ids(cs, lang) if cs else tr(lang, "none")  # noqa: E731
+    rows = [[*labels(lang, "active_casualties"), ", ".join(f"{sum(c.triage == t for c in q)} {t}"
+                                                           for t in ("T1", "T2", "T3"))],
+            [*labels(lang, "not_triaged"), listed(untriaged)],
+            [*labels(lang, "triaged_no_vehicle"), listed(no_vehicle)],
+            [*labels(lang, "past_golden_hour"), listed(late)],
+            [*labels(lang, "vehicles_idle"), tr(lang, "of", a=len(idle), b=len(world.vehicles))],
+            [*labels(lang, "missions_under_way"), str(sum(m.status in LIVE_MISSION for m in world.missions))],
+            [*labels(lang, "free_beds"), str(sum(f.free_beds for f in world.facilities))],
+            [*labels(lang, "active_threats"), str(sum(1 for t in world.threats if t["active"]))],
+            [*labels(lang, "closed_roads"), str(len({r["way"] for r in world.closed_roads}))]]
+    say = tr(lang, "sitrep", total=len(q), u=len(untriaged), nv=len(no_vehicle), late=len(late), idle=len(idle))
+    return Answer(say, [clock(world.now), *labels(lang, "now")], rows, [c.nid for c in untriaged + no_vehicle])
 
 
 @intent("help", "What I can answer", [
@@ -935,21 +1050,24 @@ def sitrep(world: World, _: Slots) -> Answer:
     "what can you do",
     "list commands",
 ])
-def help_(world: World, _: Slots) -> Answer:
-    return Answer("You can ask me about casualties, vehicles, medical points, missions, threats and roads.",
-                  ["Topic", "Try saying"], [[i.title, i.examples[0]] for i in INTENTS if i.name != "help"])
+def help_(world: World, slots: Slots) -> Answer:
+    lang = slots.lang
+    return Answer(tr(lang, "help"), labels(lang, "topic", "try_saying"),
+                  [[i.title_in(lang), i.examples_in(lang)[0]] for i in INTENTS if i.name != "help"])
 
 
 # --- Matching a question to an intent ----------------------------------------------------------------------------
 
 
 class Matcher:
-    """Nearest example phrasing. `encode` turns texts into unit vectors (all-MiniLM-L6-v2 in the server)."""
+    """Nearest example phrasing, in either language. `encode` turns texts into unit vectors
+    (paraphrase-multilingual-MiniLM-L12-v2 in the server). Examples go through normalise() like questions do."""
 
     def __init__(self, encode: Callable):
         self.encode = encode
-        self.owners = [i for i in INTENTS for _ in i.examples]
-        self.vectors = encode([e.lower() for i in INTENTS for e in i.examples])
+        pairs = [(i, e) for i in INTENTS for e in i.examples + i.examples_in("uk")]
+        self.owners = [i for i, _ in pairs]
+        self.vectors = encode([normalise(e) for _, e in pairs])
 
     def rank(self, text: str) -> list[tuple[Intent, float]]:
         """One (intent, best score) per intent, best first."""
@@ -963,21 +1081,23 @@ class Matcher:
 
 def ask(matcher: Matcher, question: str, graph: str, change: str | None = None, now: datetime | None = None,
         world: World | None = None) -> dict:
-    """The answer to one question, as the JSON the C2 page shows."""
+    """The answer to one question, in its language, as the JSON the C2 page shows."""
     question = question.strip()
+    lang = language(question)
     if not question:
-        return {"understood": False, "question": "", "say": "I didn't hear a question. Try again."}
+        return {"understood": False, "question": "", "lang": lang, "say": tr(lang, "no_question")}
     t0 = time.perf_counter()
     ranked = matcher.rank(question)
     best, score = ranked[0]
     slots = read_slots(question)
-    out = {"question": question, "intent": best.name, "title": best.title, "score": round(score, 3),
-           "slots": {k: v for k, v in vars(slots).items() if v}}
-    if score < MIN_SCORE:
-        return out | {"understood": False, "say": "Sorry, I didn't understand that.",
-                      "suggestions": [i.examples[0] for i, _ in ranked[:3]]}
+    out = {"question": question, "lang": lang, "intent": best.name, "title": best.title_in(lang),
+           "score": round(score, 3), "slots": {k: v for k, v in vars(slots).items() if v and k != "lang"}}
+    if score < MIN_SCORE or re.sub(r"[^\w' ]", "", question.lower()).strip() in NOT_QUESTIONS:
+        return out | {"understood": False, "say": tr(lang, "not_understood"),
+                      "suggestions": [i.examples_in(lang)[0] for i, _ in ranked[:3]]}
     if best.needs and getattr(slots, best.needs) is None:
-        return out | {"understood": False, "say": ASK_FOR[best.needs], "suggestions": best.examples[:2]}
+        return out | {"understood": False, "say": tr(lang, f"ask_{best.needs}"),
+                      "suggestions": best.examples_in(lang)[:2]}
     understood_ms = (time.perf_counter() - t0) * 1000
     t1 = time.perf_counter()
     world = world or load_world(graph, change, now)

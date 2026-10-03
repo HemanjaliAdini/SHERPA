@@ -429,6 +429,7 @@ A1 lands.
 - **Done when:** the button brings new UGVs onto the map after the delay, and dispatch uses them.
 
 **B3. Voice.** Owner: Vashti. 🟡 Working; optional extras.
+- ✅ Ukrainian: questions asked in Ukrainian are answered in Ukrainian (`scripts/voice_text.py`).
 - A question that reads the applied events ("what happened in the last ten minutes?") in `scripts/voice_query.py`.
 
 **C1. Radio.** Owner: Adini. ⬜ Needs A1 and A2.
