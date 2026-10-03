@@ -388,8 +388,8 @@ def new_route(client: TuringDB, m: dict, here: int, roads, now: datetime) -> Non
 def reset_events(client: TuringDB) -> None:
     """Undo every event and put the demo script back: roads reopen and lose their delays, stopped vehicles run again
     (reset_writes restores their battery), nobody is stranded, nodes an event created (they carry `event_id`) go,
-    and the script's events are recreated pending (so edits to the script take effect on Reset). Live events are
-    deleted."""
+    and, on a demo graph, the script's events are recreated pending (so edits to the script take effect on Reset).
+    Live events are deleted."""
     from demo_script import EVENTS
 
     client.query("MATCH (:Junction)-[r:ROAD]->(:Junction) WHERE r.closed_by IS NOT NULL "
@@ -400,5 +400,6 @@ def reset_events(client: TuringDB) -> None:
     client.query("MATCH (c:Casualty) WHERE c.stranded_by IS NOT NULL REMOVE c.stranded_by, c.stranded_from")
     client.query("MATCH (n) WHERE n.event_id IS NOT NULL DETACH DELETE n")
     client.query("MATCH (e:Event) DETACH DELETE e")
-    if EVENTS:
+    scripted = rows(client, "MATCH (s:SimControl) RETURN s.script AS script")
+    if EVENTS and scripted and scripted[0]["script"] is True:  # a demo graph (seed_scenario.py --demo)
         client.query("CREATE " + ", ".join(create_clause(e) for e in EVENTS))

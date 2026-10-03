@@ -63,9 +63,10 @@ def db():
     except Exception:
         pytest.skip("TuringDB is not running on localhost:6666")
     if GRAPH not in graphs:
-        subprocess.run([str(ROOT / "scripts" / "build_graph.sh"), GRAPH], check=True, cwd=ROOT)
+        subprocess.run([str(ROOT / "scripts" / "build_graph.sh"), GRAPH, "--demo"], check=True, cwd=ROOT)
     client.load_graph(GRAPH, raise_if_loaded=False)
     client.set_graph(GRAPH)
+    in_change(client, lambda c: c.query("MATCH (s:SimControl) SET s.script = true"))  # also on an older build
     return client
 
 

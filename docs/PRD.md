@@ -155,7 +155,7 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 (:Mission {id, status, created_at, eta, progress_m})                               ✅ (+ status cancelled, blocked ✅ A1)
 
 (:Clock {id, now})                     written only by the simulator              ✅
-(:SimControl {id, running, speed, reset})   written only by the C2 screen         ✅
+(:SimControl {id, running, speed, reset, script})   written only by the C2 screen  ✅
 ```
 
 ### Relationships
@@ -248,7 +248,8 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
   is still to come and what is resolved; a click flies to an event.
 - **Reset** (`reset_writes` → `reset_events`): roads with a `closed_by` reopen, roads with a `delayed_by` go back to
   `delay_factor` 1.0, stopped vehicles run again (seed battery), nobody is stranded, nodes created by an event (they carry `event_id`) are deleted with their edges, and every
-  `Event` is deleted and the script's are recreated `pending` from `scripts/demo_script.py` (so live ones go, and an
+  `Event` is deleted and, on a demo graph (`SimControl.script`, set by `seed_scenario.py --demo`), the script's are
+  recreated `pending` from `scripts/demo_script.py` (so live ones go, and an
   edited script takes effect on Reset without rebuilding the graph).
 - **Observation (draft, A2 decides):** `source` is `medic`, `drone`, `radio` or `app`; `march` is the list of MARCH
   letters affected (`M` massive haemorrhage, `A` airway, `R` respiration, `C` circulation, `H` hypothermia or head
@@ -399,7 +400,8 @@ questions work. **Missing:** things that happen during the run (events), sensor 
 
 ### 8.1 The demo
 
-Scripted in `scripts/demo_script.py` (B1), tuned by running it with the triage in its `TRIAGE` (T1: CAS-1, CAS-3,
+Played on graph `evac_demo` (`run.sh` builds it; `evac` is the plain scenario). Scripted in
+`scripts/demo_script.py` (B1), tuned by running it with the triage in its `TRIAGE` (T1: CAS-1, CAS-3,
 CAS-6; T2: CAS-5, CAS-7; T3: CAS-2, CAS-4, CAS-8). Steps 2–4 are its events (EV-1 to EV-6); 5–7 are still to do. Each event shows as resolved once over: CAS-6
 delivered 06:04, CAS-1 picked up 06:15, road reopened 06:20 (EV-6, engineers fill the crater), CAS-7 06:48, CAS-8
 08:25; everyone is delivered by 08:41.
@@ -535,7 +537,8 @@ UGV stops with a casualty on board; stranded casualties are fetched first, by a 
 
 ### 8.6 Done so far, by layer
 
-- **Layer 0, foundation** ✅: `run.sh` starts TuringDB in memory and rebuilds graph `evac` from the repo
+- **Layer 0, foundation** ✅: `run.sh` starts TuringDB in memory and rebuilds graphs `evac` (plain scenario) and
+  `evac_demo` (with the scripted demo, `seed_scenario.py --demo`), each with its own simulator, from the repo
   (`scripts/build_graph.sh`: OSM roads from `data/osm/roads.json` via `build_roads.py`, then `seed_scenario.py`;
   4,098 junctions, 9,142 roads). Route search in minutes (`routing.py`).
 - **Layer 1, simulator** ✅: `Clock` shared with the screen; play, pause, speed and reset; tick loop in

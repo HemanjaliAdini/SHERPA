@@ -75,6 +75,16 @@ def test_seed_and_reset_put_the_demo_script_events_pending(fresh):
     assert all(e["s"] == "pending" and e["src"] == "script" for e in found.values())
 
 
+def test_reset_of_a_plain_graph_brings_no_scripted_events(fresh):
+    """Only a demo graph (seed_scenario.py --demo, SimControl.script) plays the script; evac is the plain scenario."""
+    in_change(fresh, lambda c: c.query("MATCH (s:SimControl) SET s.script = false"))
+    try:
+        in_change(fresh, reset_writes)
+        assert one(fresh, "MATCH (e:Event) RETURN count(e) AS n")["n"] == 0
+    finally:
+        in_change(fresh, lambda c: c.query("MATCH (s:SimControl) SET s.script = true"))
+
+
 def test_event_waits_for_its_minute_then_closes_both_directions(scratch):
     no_script(scratch)
     add_event(scratch, "EV-T", 2, "road_closed", {"osm_way_id": BRIDGE})
