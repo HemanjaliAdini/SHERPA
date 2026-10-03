@@ -441,7 +441,11 @@ export async function getEdges(args: GetEdgesArgs): Promise<GetEdgesResponse> {
 }
 
 export async function executeCypherQuery(args: CypherQueryArgs): Promise<CypherQueryResponse> {
-  return await fetch(`/api/query?graph=${args.graph}`, {
+  const params = new URLSearchParams({ graph: args.graph })
+  if (args.change) params.set('change', args.change)
+  if (args.commit) params.set('commit', args.commit)
+
+  return await fetch(`/api/query?${params}`, {
     method: 'POST',
     signal: args.signal ?? args.controller?.signal,
     headers: {
