@@ -5,4 +5,5 @@
 ## Run
   <code>uv sync
   ./run.sh
-  \# open http://127.0.0.1:8080</code>
+  \# C2 visualizer:       http://localhost:5180
+  '# TuringDB graph view: http://localhost:8080</code>
