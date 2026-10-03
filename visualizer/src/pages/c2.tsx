@@ -26,7 +26,8 @@ import {
   fetchScenario,
   formatClock,
 } from '@/components/c2/scenario-data'
-import { type Selection, neighbourhood } from '@/components/c2/selection'
+import { type Selection, neighbourhood, selectionFromIds } from '@/components/c2/selection'
+import { VoiceAsk } from '@/components/c2/voice-ask'
 import { useScenarioStore } from '@/stores'
 
 // deck.gl is only downloaded when the 3D view is first opened
@@ -108,6 +109,7 @@ const KEY_HELP = [
   '1-9 casualty',
   'Esc clear',
   '/ query',
+  'M ask by voice',
   'L legend',
 ].join(' \u00b7 ')
 const PAN_PX = 150
@@ -259,7 +261,7 @@ export const TC2Page = () => {
           </Suspense>
         )}
 
-        <div className="absolute top-3 left-3 z-[1000] max-w-[calc(100%-24px)]">
+        <div className="absolute top-3 left-3 z-[1000] flex max-w-[calc(100%-24px)] flex-col items-start gap-2">
           <QueryBar
             graph={graph.data}
             graphName={graphName}
@@ -269,6 +271,19 @@ export const TC2Page = () => {
             onResult={(outcome) => {
               setSelection(outcome && outcome.selection.nodes.size > 0 ? outcome.selection : null)
               if (outcome?.selection.nodes.size) setFitRequest((n) => n + 1)
+            }}
+          />
+          <VoiceAsk
+            graphName={graphName}
+            change={change}
+            now={now}
+            onAnswer={(answer) => {
+              const picked =
+                answer && graph.data
+                  ? selectionFromIds(graph.data, answer.highlight ?? [], answer.paths ?? [])
+                  : null
+              setSelection(picked && picked.nodes.size > 0 ? picked : null)
+              if (picked?.nodes.size) setFitRequest((n) => n + 1)
             }}
           />
         </div>

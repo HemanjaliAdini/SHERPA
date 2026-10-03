@@ -29,6 +29,25 @@ export function neighbourhood(graph: GeoGraph, nid: number): Selection {
   return { nodes, edges }
 }
 
+/** Nodes by id, plus routes given as junction ids: each consecutive pair lights the road between them. */
+export function selectionFromIds(graph: GeoGraph, nids: number[], paths: number[][]): Selection {
+  const nodes = new Set(nids.filter((n) => graph.nodes.has(n)))
+  const edges = new Set<number>()
+  for (const path of paths) {
+    path.forEach((a, k) => {
+      const b = path[k + 1]
+      if (graph.nodes.has(a)) nodes.add(a)
+      if (b === undefined) return
+      const i = (graph.incident.get(a) ?? []).find((e) => {
+        const edge = graph.edges[e]
+        return (edge.src === a && edge.dst === b) || (edge.src === b && edge.dst === a)
+      })
+      if (i !== undefined) edges.add(i)
+    })
+  }
+  return { nodes, edges }
+}
+
 // Node and edge ids both come back as UInt64, so whether a column holds nodes or edges is read
 // from the query itself: `(x ...)` binds a node variable, `[x ...]` an edge variable.
 const NODE_VAR = /\(\s*([A-Za-z_]\w*)/g
