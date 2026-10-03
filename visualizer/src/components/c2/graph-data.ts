@@ -10,6 +10,8 @@ export type GraphNode = {
   derived: boolean
   /** facility role, vehicle kind, threat type, or triage category for casualties */
   kind: string
+  /** free_beds for a MedicalPoint, battery_pct for a Vehicle, level for a Threat; else null */
+  metric: number | null
 }
 
 export type GraphEdge = {
@@ -36,7 +38,10 @@ export type GeoGraph = {
 }
 
 const NODES_QUERY =
-  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category'
+  'MATCH (n) RETURN id(n), labels(n), n.id, n.lat, n.lon, n.type, n.triage_category, ' +
+  'n.free_beds, n.battery_pct, n.level'
+// Which numeric property a label's metric is read from (column offset after triage_category)
+const METRIC_COLUMN: Record<string, number> = { MedicalPoint: 0, Vehicle: 1, Threat: 2 }
 const EDGES_QUERY =
   'MATCH (a)-[r]->(b) RETURN id(r), id(a), id(b), type(r), r.highway, r.threat_level, r.status, ' +
   'r.length_m, r.distance_m'
@@ -55,14 +60,16 @@ export async function fetchGraph(graph: string, change?: string): Promise<GeoGra
   const nodes = new Map<number, GraphNode>()
   const pending = new Map<number, Omit<GraphNode, 'lat' | 'lon' | 'derived'>>()
   for (const chunk of nodeData) {
-    const [nid, labels, id, lat, lon, type, triage] = chunk as unknown[][]
+    const [nid, labels, id, lat, lon, type, triage, ...metrics] = chunk as unknown[][]
     for (let i = 0; i < nid.length; i++) {
       const label = (labels[i] as string[])[0] ?? ''
+      const metric = metrics[METRIC_COLUMN[label]]?.[i]
       const base = {
         nid: Number(nid[i]),
         label,
         id: str(id[i]),
         kind: label === 'Casualty' ? str(triage[i]) : str(type[i]),
+        metric: metric === null || metric === undefined ? null : Number(metric),
       }
       if (lat[i] === null || lon[i] === null) pending.set(base.nid, base)
       else
