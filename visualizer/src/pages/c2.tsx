@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 
 import { C2Map, type C2MapHandle } from '@/components/c2/c2-map'
 import { CasualtyQueue } from '@/components/c2/casualty-queue'
@@ -29,6 +29,13 @@ import {
 import { type Selection, neighbourhood } from '@/components/c2/selection'
 import { useScenarioStore } from '@/stores'
 
+// deck.gl is only downloaded when the 3D view is first opened
+const C2Map3D = lazy(() =>
+  import('@/components/c2/c2-map-3d').then((m) => ({ default: m.C2Map3D }))
+)
+
+type ViewMode = '2d' | '3d'
+
 const NodeKey = ({ color, label, small }: { color: string; label: string; small?: boolean }) => (
   <div className="mb-1 flex items-center gap-2">
     <span className="inline-flex w-6 justify-center">
@@ -57,7 +64,7 @@ const SectionTitle = ({ children }: { children: string }) => (
   </div>
 )
 
-const Legend = () => (
+const Legend = ({ mode }: { mode: ViewMode }) => (
   <div className="bg-grey-900/95 text-content-primary border-grey-700 max-h-[60vh] w-56 overflow-y-auto rounded-md border p-3 text-xs shadow-lg">
     <SectionTitle>Nodes</SectionTitle>
     <NodeKey color={JUNCTION_COLOR} label="Junction" small />
@@ -86,6 +93,15 @@ const Legend = () => (
     <EdgeKey color={EDGE_STYLE.NEAR.color} dashed label="NEAR" />
     <EdgeKey color={EDGE_STYLE.AFFECTS.color} dashed label="AFFECTS" />
     <EdgeKey color={HIGHLIGHT_COLOR} label="Selected / query result" />
+    {mode === '3d' && (
+      <>
+        <SectionTitle>Column height</SectionTitle>
+        <div className="text-content-fourth">
+          Casualty: triage (T1 tallest). Medical point: free beds. Vehicle: battery %. Threat:
+          level.
+        </div>
+      </>
+    )}
     <div className="text-content-fourth mt-2">
       Click a node to see its relationships; click empty map to clear.
     </div>
@@ -110,6 +126,7 @@ export const TC2Page = () => {
   const [focusNid, setFocusNid] = useState<number | null>(null)
   const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [mode, setMode] = useState<ViewMode>('2d')
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
 
@@ -190,6 +207,16 @@ export const TC2Page = () => {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // Both views take the same props and command handle, so controls work in 2D and 3D
+  const mapProps = {
+    graph: graph.data,
+    selection,
+    onSelectNode: selectNode,
+    graphName,
+    change,
+    fitRequest,
+  }
+
   const unplaced = graph.data?.unplaced
     ? ` \u00b7 ${graph.data.unplaced} nodes without a position`
     : ''
@@ -202,15 +229,19 @@ export const TC2Page = () => {
   return (
     <div className="flex h-full w-full">
       <div className="relative h-full flex-1">
-        <C2Map
-          ref={mapRef}
-          graph={graph.data}
-          selection={selection}
-          onSelectNode={selectNode}
-          graphName={graphName}
-          change={change}
-          fitRequest={fitRequest}
-        />
+        {mode === '2d' ? (
+          <C2Map ref={mapRef} {...mapProps} />
+        ) : (
+          <Suspense
+            fallback={
+              <div className="c2-map text-content-fourth flex h-full w-full items-center justify-center text-xs">
+                loading 3D view...
+              </div>
+            }
+          >
+            <C2Map3D ref={mapRef} {...mapProps} />
+          </Suspense>
+        )}
 
         <div className="absolute top-3 left-3 z-[1000] max-w-[calc(100%-24px)]">
           <QueryBar
@@ -229,9 +260,22 @@ export const TC2Page = () => {
         <div className="bg-grey-900/90 text-content-fourth border-grey-700 absolute top-3 right-3 z-[1000] rounded-md border px-3 py-1.5 text-xs">
           {graphName} on {change ? `change ${change}` : 'main'} {'\u00b7'} {status}
         </div>
+        <div className="bg-grey-900/90 border-grey-700 absolute top-12 right-3 z-[1000] flex overflow-hidden rounded-md border text-xs">
+          {(['2d', '3d'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={mode === m}
+              onClick={() => setMode(m)}
+              className={`px-3 py-1 font-medium ${mode === m ? 'bg-grey-600 text-content-primary' : 'text-content-fourth hover:bg-grey-800'}`}
+            >
+              {m.toUpperCase()}
+            </button>
+          ))}
+        </div>
 
         <div className="absolute bottom-6 left-3 z-[1000] flex flex-col items-start gap-2">
-          {legendOpen && <Legend />}
+          {legendOpen && <Legend mode={mode} />}
           <button
             type="button"
             onClick={() => setLegendOpen(!legendOpen)}
