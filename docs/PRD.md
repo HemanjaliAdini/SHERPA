@@ -354,11 +354,21 @@ of their most urgent present Finding, then time of injury. Each card shows the r
 medium, low, with the number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
 ambulatory from `mobility`): one click accepts, or the coordinator picks another.
 
-**Drone images (SARD).** The Search and Rescue Image Dataset (IEEE DataPort, DOI 10.21227/ahxm-k331): 1,981 drone
-images with people labelled Standing, Walking, Running, Sitting, Lying or Not Defined; needs an IEEE DataPort
-subscription. Options: (A) now: a few images with their labels used as the drone's output; (B) later, Adolfo, if
-there is time: a pretrained person detector (YOLO) run offline on 5–10 drone frames for real boxes and confidences,
-posture from the label; (C) after the hackathon: fine-tune on SARD to detect lying people.
+**Drone images (SARD).** We use **SAR Detection** (Roboflow Universe, CC BY 4.0,
+https://universe.roboflow.com/rtiaditya-yoga-darmawan/sar-detection, version 3): the SARD drone images (1,980) with
+each person labelled by posture: `laying_down` (1,569), `stands` (1,822), `Walking` (1,288), `not_defined` (976),
+`seated` (621), `Running` (78). Downloaded in YOLOv8 format to `data/vision/` (git-ignored, ~0.3 GB; not in the repo:
+each teammate downloads it from that link). Cite as SARD (IEEE DataPort, DOI 10.21227/ahxm-k331) via that Roboflow
+copy.
+- **Now (decided 3 Oct): the labels are the drone's output.** A few images, chosen by posture, stand in for the
+  drone in the demo script: posture → Finding below; the confidence is written in the script (labels carry none).
+  People are small in the frame: crop around the box or draw it for the card (A2e).
+- **Posture → Finding:** `laying_down` → `mobility` = no; `Walking`, `Running` → `mobility` = yes; `stands`,
+  `seated`, `not_defined` → `mobility` = unsure.
+- **Later, when there is time (A2f):** real detections with real confidences, either the trained model
+  `sar-detection/3` run locally with Roboflow's `inference` library (weights download once with an API key, then
+  offline), or our own YOLOv8 trained on `data/vision/` on the Mac. Not via a cloud API during the demo.
+- Rejected: the IEEE DataPort original (paid); `sard_yolo` on Roboflow (one class, `person`, no posture).
 
 **Precedent.** Team Chiron (CMU, Pittsburgh), 4th in round 1 of the DARPA Triage Challenge, fused per-sign vision
 models from a robot with a Bayesian network written by hand with medics, no training. Correct signs went from 14 %
@@ -523,8 +533,20 @@ To settle together. None blocks the demo now.
 
 13. **Confidence bands and drone confidences** (section 5): high ≥ 0.8, medium 0.5–0.8, low < 0.5, and the drone's
     confidences in the demo script, are our proposal. To check with Noo and his frontline contact.
-14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
-    (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
+14. **Doctrine coverage and sign-off.** Checked on `triage_v3.jsonl` with the engine's own logic (TCCC-cited links
+    only): **8 Findings reach a category.**
+    - Immediate (T1): `bleeding_severe`, `untreated_limb_haemorrhage`, `untreated_abdominal_or_pelvic_haemorrhage`
+      (massive haemorrhage); `airway_obstruction`, `airway_obstructed_or_impending` (airway obstruction);
+      `breathing_distress` (tension pneumothorax); `torso_trauma` + `breathing_distress` together (same).
+    - Delayed (T2): `torso_trauma` (torso injury), `eye_injury` (penetrating eye injury).
+    - **Nothing reaches Minimal (T3) or Expectant**: a minor casualty gets "no recommendation".
+    - No category: `haemorrhagic_shock`, `radial_pulse_weak`, `cold_shivering`, `head_injury_signs`,
+      `mental_status_altered`, `untreated_junctional_haemorrhage`, `chest_wound`; `conscious` / `unconscious` link to
+      no injury at all.
+    - For the demo: of the drone's Findings only `bleeding_severe` (camera) and `breathing_distress` (thermal) change
+      the category; lying, cold and responding show on the card as information.
+    - Open: add rules of our own from a published triage tool, e.g. MITT's "walks → T3" (would fill the T3 gap and
+      uses `mobility`). Medic sign-off of the doctrine still needed.
 
 ---
 
