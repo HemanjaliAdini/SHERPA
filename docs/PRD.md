@@ -116,6 +116,9 @@ as it is now.
   vehicles along their routes, picks casualties up, drops them off, and moves the clock on.
 - **Everything hangs off the road network.** Casualties, vehicles and medical points link to their nearest junction
   with `NEAR`. A route is a path of `ROAD` edges between those junctions.
+- **Everything that happens during a run is an `Event`** (6.11): a closed bridge, a new casualty, a drone or radio
+  observation, more UGVs. The demo script, buttons and the radio create events; the simulator applies them on the
+  tick.
 - **A mission** is vehicle → casualty → medical point. A UGV drops at a handover or collection point; the casualty
   then waits for an ambulance to Role 1 or higher (the second leg).
 
@@ -138,11 +141,15 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
            battery_pct, max_threat, speed_kmh, status})
 
 (:Casualty {id, lat, lon, time_of_injury, status, triage_category, mobility,       ✅
-            mist_mechanism, mist_injuries, mist_signs, mist_treatment})
+            mist_mechanism, mist_injuries, mist_signs, mist_treatment,
+            march_priority, event_id})                                             🔜 A2, A1
+
+(:Event {id, at, type, payload, status, source, applied_at, error})                🔜 A1
+(:Observation {id, at, source, march, finding, confidence, media, event_id})       🔜 A2
 
 (:Threat {id, type, level, active})                                                ✅
 
-(:Mission {id, status, created_at, eta, progress_m})                               ✅
+(:Mission {id, status, created_at, eta, progress_m})                               ✅ (+ status cancelled 🔜 A1)
 
 (:Clock {id, now})                     written only by the simulator              ✅
 (:SimControl {id, running, speed, reset})   written only by the C2 screen         ✅
@@ -164,7 +171,7 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 (:Mission)-[:ROUTE_STEP {order}]->(:Junction)                                      ✅
 
 (:Casualty)-[:HELD_AT]->(:MedicalPoint)                                            ✅
-(:Report)-[:ABOUT]->(:Casualty)                                                    ❓ 7.5
+(:Observation)-[:ABOUT]->(:Casualty)                                               🔜 A2
 (:MedicalPoint)-[:REQUESTS_VEHICLE | :REQUESTS_MEDICS]->(:MedicalPoint)            bonus
 ```
 
@@ -184,6 +191,38 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
 - **`SimControl.speed`:** scenario minutes per real second (default 1). `reset = true` asks the simulator to put the
   scenario back to its start, as one commit; the history is kept.
 - **Types:** lists (`capabilities`) and `datetime(...)` (`time_of_injury`) are native TuringDB types (6.4).
+
+### Events (the contract every producer follows, 6.11)
+
+- **`Event` fields:** `id` (`EV-<n>` for scripted ones, `EV-live-<ms>` for live ones), `at` (scenario `datetime`,
+  when it takes effect), `type` (table below), `payload` (a JSON string: TuringDB properties are flat), `status`
+  (`pending` → `applied` or `failed`), `source` (`script`, `button`, `radio`), `applied_at`, `error`.
+- **Who writes what:** producers create `Event`s with `status = 'pending'`. Only the simulator
+  (`scripts/events.py`, called from `tick_writes`) applies them and changes their `status`.
+- **Order:** on each tick, every pending event with `at <= Clock.now`, by `at`, before dispatch.
+
+| `type` | `payload` | Effect when applied | Producer |
+|---|---|---|---|
+| `road_closed` | `{osm_way_id}` | Every `ROAD` with that `osm_way_id` gets `status = 'closed'` and `closed_by = <event id>`; then the re-route rule below. | script, button |
+| `casualty_reported` | `{id, lat, lon, time_of_injury, mist_mechanism, mist_injuries, mist_signs, mist_treatment}` | New `Casualty` with `status = 'reported'`, linked `NEAR` its junction (`snap` in `seed_scenario.py`). | script, radio |
+| `observation` | `{casualty_id, source, march, finding, confidence, media}` | New `Observation` `-[:ABOUT]->` the casualty; recompute its `march_priority`. | script (drone, app), radio |
+| `vehicle_requested` | `{type, count, delay_min, at_point}` | Creates `count` `vehicle_added` events at `at + delay_min`. | button |
+| `vehicle_added` | `{id, type, at_point}` | New idle `Vehicle` at the medical point `at_point`, with the seed values of its type. | `vehicle_requested` |
+
+- **Re-route after `road_closed`:** a mission is broken when two consecutive `ROUTE_STEP`s still ahead of the vehicle
+  cross a closed road. The vehicle moves back to the last junction it passed (`move_near`). If its casualty is still
+  `assigned` (not picked up), the mission becomes `cancelled`, the casualty `awaiting_pickup` and the vehicle `idle`,
+  and the same tick's dispatch plans it again on the open roads. If the casualty is `in_transit`, the mission gets new
+  `ROUTE_STEP`s from that junction to the same destination (`route()` in `routing.py`) and `progress_m = 0`; with no
+  route, to the nearest reachable destination of its type.
+- **Reset** (`reset_writes`): scripted events go back to `pending` and live ones are deleted; nodes created by an
+  event (they carry `event_id`) are deleted with their edges; roads with a `closed_by` reopen.
+- **Observation (draft, A2 decides):** `source` is `medic`, `drone`, `radio` or `app`; `march` is the list of MARCH
+  letters affected (`M` massive haemorrhage, `A` airway, `R` respiration, `C` circulation, `H` hypothermia or head
+  injury); `finding` is the text; `confidence` 0 to 1; `media` an image path under `visualizer/public/media/`.
+  `Casualty.march_priority` = position of the first affected letter in M, A, R, C, H over all its observations
+  (0 = most urgent); none means after the others. It orders the queue only: the medic still sets the triage (section 3, out
+  of scope).
 
 ---
 
@@ -222,7 +261,7 @@ Each one: what we chose and why. Do not reopen without a new fact.
      timestamps of its own);
    - Python owns the clock and the loop; the C2 screen controls it through `SimControl`. One writer per node;
    - the medic triages the whole batch while paused; on play the first tick dispatches it by priority (T1, T2, T3,
-     then time of injury). No reassignment of busy vehicles;
+     then time of injury). No reassignment of busy vehicles, except missions broken by a closed road (section 5, Events);
    - dispatch rules as the C2 planner's: UGVs to a handover or collection point, ambulances to Role 1 or higher, a
      casualty at a relay point gets ambulances only, range × battery, no road above the vehicle's `max_threat`;
    - movement uses each vehicle's own `speed_kmh` (6.1).
@@ -235,12 +274,22 @@ Each one: what we chose and why. Do not reopen without a new fact.
     the team shares one graph: same commit, same graph. The run history lasts until TuringDB stops.
     *Rejected:* a shared server (venue wifi, one point of failure, only one simulator allowed), TuringDB Cloud
     (offline requirement), copying graph folders (gigabytes).
+11. **Everything that happens during a run is an `Event` node** (3 Oct). Producers (the demo script, buttons, the
+    radio) create events; the simulator applies them on the tick, inside that minute's commit. Contract in section 5.
+    - *Why:* one writer for the world, as with `Clock`; the team works in parallel against one contract; reset puts
+      the scripted demo back exactly, so it plays the same every time; every event lands in a commit, ready for time
+      travel later.
+    - *Rejected:* each feature writing the graph directly (races with the simulator's tick, which TuringDB rejects,
+      and reset cannot undo it); events only in a Python file (a live radio message or button would not fit).
+12. **The demo is scripted** (3 Oct). Drone and app images and radio clips are prepared files with their findings
+    written by us; there is no vision model. We say so in the pitch: in production a vision model fills the same
+    `Observation`.
 
 ---
 
 ## 7. Open decisions
 
-To settle together. Only 7.8 (event format) blocks the MVP, as part of the simulator decisions (section 8, step 1).
+To settle together. None blocks the demo now.
 
 1. **Threat: one source of truth.** Today it is both `Threat-[:AFFECTS]->Junction` and `ROAD.threat_level`, and
    routing ignores both, so **ambulances are sent to the front**.
@@ -254,7 +303,7 @@ To settle together. Only 7.8 (event format) blocks the MVP, as part of the simul
      ambulance transfer point) is real and the mission logic needs it.
 4. **Which capability each triage category needs.** `routing.py` has a placeholder: T1 and T2 need `stabilisation`,
    T3 needs `first_aid`. Clinical call, for Noo.
-5. **Asynchronous reports.** `Casualty` has no `reported_at` or `source`.
+5. ✅ *Resolved by `Observation` events (6.11, section 5).* **Asynchronous reports.** `Casualty` has no `reported_at` or `source`.
    - *Proposal:* a `Report` node (MIST content, `reported_at`, `source`) linked with `ABOUT`, so updates never
      overwrite earlier reports and the audit story works.
 6. **Medics: nodes or numbers?** Today only counts on medical points.
@@ -263,9 +312,9 @@ To settle together. Only 7.8 (event format) blocks the MVP, as part of the simul
    - *Proposal:* % of casualties of each triage category that reach the right medical point within their target
      time (for example category 1 within 60 minutes, following NATO's 10-1-2). "One more UGV" is a branch with an
      extra vehicle, compared with the base on this metric.
-8. **Event format** for Layer 1: what a timed event looks like (time, type, payload). It must include speed changes
+8. ✅ *Resolved by 6.11 (contract in section 5).* **Event format** for Layer 1: what a timed event looks like (time, type, payload). It must include speed changes
    and delays, not only new casualties and closures, or the demo never shows travel time changing.
-9. **The bridge for the collapse event:** proposal `osm_way_id` 1297140381, the secondary road Robotyne → Orikhiv,
+9. ✅ *Used in the demo (8.1).* **The bridge for the collapse event:** proposal `osm_way_id` 1297140381, the secondary road Robotyne → Orikhiv,
    about 500 m north of HP-1 (47.505 N, 35.813 E); mission routes from the front already cross it.
 10. ✅ *Resolved by the simulator (6.8): UGVs drop at a relay point, an ambulance takes over.* **UGV to ambulance relay.** In `routing.py` a mission is one vehicle. The C2 planner already sends UGVs to a
     `handover` point (or a collection point) and ambulances to Role 1+; adopt that rule everywhere. UGVs have 25 km range and no point with
@@ -300,98 +349,147 @@ To settle together. Only 7.8 (event format) blocks the MVP, as part of the simul
 
 ## 8. Plan
 
-Status as of **Saturday 3 Oct, afternoon**: ✅ done · 🟡 partly · ⬜ not started.
+Status as of **Saturday 3 Oct, evening**: ✅ done · 🟡 partly · ⬜ not started. Every task names its owner, the
+files it touches and how we know it is done. Read 6.11 and the "Events" part of section 5 before starting any task.
 
-**MVP = Layers 0–4** (gate: the full demo runs on screen without touching the terminal).
+**Goal for Sunday:** a scripted demo (8.1) that we know works, shows an edge case, and is screen recorded. Hacking
+closes Sunday 12:00; Demo Day starts 13:00.
 
-**Where we are:** the scenario runs. The medic triages from MIST reports, presses play, and the system dispatches;
-vehicles drive the real roads, pick casualties up, hand over to ambulances and deliver, one commit per minute.
-**Next:** a disruption event and time travel, which show TuringDB's history.
+**Where we are:** Layers 0, 1, 2 and 4 are done (8.6). The medic triages from MIST reports and presses Play; the
+system dispatches, vehicles drive the real roads, hand over to ambulances and deliver, one commit per minute; voice
+questions work. **Missing:** things that happen during the run (events), sensor fusion with MARCH, the demo script.
 
-### Critical path to the MVP, in order
+### 8.1 The demo
 
-1. ✅ **Simulator (Layer 1).** Blocks everything else. Decide first, together: whether vehicles move on the map, clock
-   speed, state life cycles, event format (7.8) and a shared scenario clock (today the UI clock is fixed at 05:30).
-   Each run starts from an initial commit of the graph instead of building a new graph.
-2. ✅ **Second leg:** when a UGV delivers at a handover point, the ambulance leg can be planned. Mostly falls out of 1.
-3. **One event end to end:** the bridge (7.9) collapses from a button in the UI, broken missions show, re-plan.
-4. **Time travel in the UI:** rewind to before the collapse. TuringDB's headline feature; weighs more in the demo
-   than branches.
-5. **Polish:** query time in ms on screen, a demo script.
+Draft, for Vashti to turn into `scripts/demo_script.py` (B1). Minutes are tuned by running it.
 
-**Out of the MVP** (valuable, not needed to tell the story): "one more UGV" and the lives-saved metric (7.7), the
-threat zone (7.1), MIST and MITT clinical content (7.2–7.4), porting the fastest route into the C2 planner (7.12),
-the extra scenarios in `docs/SCENARIOS.md`.
+1. **05:30.** Five casualties reported with MIST. The medic triages them on screen and presses Play; the system
+   dispatches.
+2. **~05:38. Drone image:** a sixth casualty with a massive bleed (`casualty_reported` + `observation` with `M`).
+   It goes to the top of the queue; the medic triages it.
+3. **~05:42. Radio:** a medic reports that a casualty has stopped breathing (`observation` with `A`/`R`, from the
+   radio, C1). The queue reorders.
+4. **~05:45. The bridge is blown** (7.9, `osm_way_id` 1297140381) while a UGV carrying a T1 is about to cross it
+   (`road_closed`). The system re-routes; the map shows the new route and the new ETA. **This is the edge case.**
+5. **UGVs are short:** the operator requests two more (`vehicle_requested`); they arrive 10 minutes later.
+6. **Voice:** "who is past the golden hour?", "situation summary". Click a casualty: its drone photo.
 
-### Status by layer
+### 8.2 How we work: everything that happens during a run is an event
 
-**Layer 0: Foundation** ✅
-- ✅ TuringDB and the C2 map start with `run.sh`.
-- ✅ OSM roads as `Junction` and `ROAD` (`build_roads.py`); `data/osm/roads.json` shared in the repo (pending merge).
-- ✅ Scenario on the real roads (`seed_scenario.py`): every entity on or near a junction, all 5 casualties reachable
-  by a UGV.
-- ✅ `scripts/build_graph.sh` builds the graph end to end. Graph `evac`, rebuilt in memory by `run.sh` on every start (4,098 junctions, 9,142 roads, `Clock`, `SimControl`).
-  Graphs built before the `MAX_GAP_M = 60` fix have Robotyne cut off the network: rebuild under a new name.
-- ✅ Route search returning minutes (`routing.py`, 10 tests; and TuringDB `shortestPath` in the C2 planner).
-- **Gate:** met on `evac3`: a route from a casualty to a medical point returns minutes, and a mission is written as
-  one change, committed and submitted.
+Decision 6.11; the contract (event types, payloads, reset) is in section 5, "Events".
 
-**Layer 1: Simulator and events** ✅ (timed events still to do)
-- ✅ Scenario clock (`Clock`) shared by the simulator and the screen; play, pause, speed and reset from the screen.
-- ✅ Tick loop (`scripts/simulate.py`): dispatch, movement along the road geometry, pickups (the casualty rides with
-  the vehicle), drops, handover to an ambulance, beds; one commit per tick. A rejected pass is retried.
-- ⬜ Timed events (7.8): casualties arriving over time, speed changes, delays.
-- **Gate:** met: the scenario plays, and each tick is a commit carrying its scenario time (`tests/test_simulate.py`).
+- **Nobody changes the world directly.** The script, a button, the radio or any other producer creates an `Event`
+  node; the simulator applies it on the tick, inside that minute's commit. The one exception is the medic's triage
+  (`setTriage` in `visualizer/src/components/c2/sim.ts`), unchanged.
+- **Live events** are written as one short change: `writeChange` in `sim.ts` (TypeScript) or `in_change` in
+  `scripts/simulate.py` (Python), with `at` = the current `Clock.now`.
+- **To add an event type:** (1) a row in the section 5 table, (2) a handler in `scripts/events.py`, (3) one test in
+  `tests/test_events.py`, (4) if reset needs more than the generic undo, say how in the row.
 
-**Layer 2: Missions** ✅
-- ✅ Automatic dispatch in the simulator (`routing.py`): priority, capacity, range × battery, threat, relay rules.
-- ✅ Second leg: a casualty dropped at a handover point gets an ambulance on the next tick.
-- ✅ Mission life cycle `planned → active → done`.
-- 🟡 Manual C2 planner kept behind "Manual"; its ETA does not use `speed_kmh` yet.
-- **Gate:** every triaged casualty gets a mission as soon as a suitable vehicle is free.
+### 8.3 Work until the freeze (Saturday 22:00)
 
-**Layer 3: Changing events and versioning** ⬜
-- 🟡 `routing.py close <osm_way_id>` closes a road both ways and lists the broken missions (terminal only).
-- ⬜ Bridge collapse from the UI, re-plan of the broken missions.
-- ⬜ Time travel to a past commit in the UI.
-- ⬜ Branches and the "one more UGV" replay (out of the MVP).
-- **Gate:** close the bridge, see the broken missions, re-plan, and rewind to before the closure.
+**Order:** A1 and A2 first, in parallel; they unblock everyone. B, C and D can start drafting now and plug in when
+A1 lands.
 
-**Layer 4: Map and operator screen** 🟡
-- ✅ C2 page: 2D and 3D map, casualty queue, mission planner, Cypher query bar with preset queries, node inspector,
-  mission routes drawn; graph picked with `?graph=<name>`.
-- ✅ Triage cards with the MIST report; clock, play/pause, speed, reset; vehicles slide between ticks (2D and 3D).
-- ✅ End-to-end test `visualizer/tests/simulator.spec.ts` (live: needs TuringDB and the simulator).
-- ⬜ Event buttons, commit picker for time travel, query time in ms.
-- **Gate:** the full demo runs on screen without touching the terminal.
+**A1. Event mechanism and the bridge.** Owner: Vashti (her list: "things happen during the simulation, blow up a bridge"). ⬜ Blocks B1, B2, C1.
+- Create `scripts/events.py`: `apply_due(client, now)` reads `Event`s with `status = 'pending'` and `at <= now`,
+  ordered by `at`, calls the handler for each `type`, and sets `status = 'applied'` and `applied_at`. An unknown type
+  or a failing handler sets `status = 'failed'` and `error`, and the tick goes on.
+- Update `tick_writes` in `scripts/simulate.py` (line 176): call `apply_due` before `dispatch_pass`, so a closed road
+  or a new casualty counts in the same minute.
+- Handler `road_closed`: the closing logic of `close_road` (`scripts/routing.py`, line 269) inside the tick's change,
+  then the re-route rule of section 5. Add mission status `cancelled`: count it like `done` where code checks
+  `m.status <> 'done'` (beds in flight in `dispatch_pass`, `routing.py` line 230) and hide it on the map like `done`
+  (`visualizer/src/components/c2/graph-data.ts`).
+- Update `reset_writes` in `scripts/simulate.py` (line 202): the reset rule of section 5.
+- Update `scripts/seed_scenario.py`: `create_statement()` (line 85) also creates one `Event` node per entry of
+  `EVENTS` in `scripts/demo_script.py`.
+- **Done when:** `uv run pytest` passes with `tests/test_events.py` (the bridge closes both directions at its
+  minute; a loaded mission that crossed it gets a new route and still delivers; reset reopens the road and puts the
+  event back to pending), and on screen a vehicle takes another road when the bridge falls.
 
-**CUT LINE: freeze the core by Saturday 22:00** (the venue closes at 22:30)
+**A2. Observation format and MARCH ranking (sensor fusion).** Owner: Adolfo. ⬜ Blocks C1 and C2 (their payloads).
+- Settle the `Observation` fields and the ranking rule in section 5 (a draft is there).
+- Handler `observation` in `scripts/events.py`: creates the `Observation` and its `ABOUT` edge, recomputes
+  `Casualty.march_priority`.
+- UI: the queue order in `visualizer/src/components/c2/scenario-data.ts` (sort at line 115) becomes untriaged first,
+  then `march_priority`, then time of injury. The card in `casualty-queue.tsx` shows the MARCH letters and the
+  sources.
+- **Done when:** an `observation` event with `M` on CAS-5 puts CAS-5 first in the queue at its minute.
 
-**Layer 5: Bonus, only if layers 0–4 work**
-- Messages requesting more UGVs or medics.
-- Vision or RF from drones and phones.
-- 🟡 Plain-language questions, spoken or typed, on the C2 page (`scripts/voice_query.py`, `voice_server.py`):
-  Parakeet speech to text, then the nearest of 24 known questions by multilingual MiniLM similarity, answered from
-  the graph as a sentence and a table, in English or Ukrainian (the language of the question). Retrieval, not a
-  generative LLM: it can only say what a handler computes, and under a similarity of 0.6 it says it did not
-  understand. Read-only; it never tasks a vehicle. *Model:* all-MiniLM-L6-v2 was rejected for Ukrainian: it splits
-  Cyrillic into letters and scored off-topic Ukrainian as high as real questions. Ukrainian texts
-  (`scripts/voice_text.py`) still need a native speaker's review.
-- A triage suggestion based on MITT.
+**B1. The demo script.** Owner: Vashti. ⬜ Needs A1.
+- Create `scripts/demo_script.py` with `EVENTS` (format in section 5), starting from 8.1.
+- Run it on screen and tune the minutes so the bridge falls while a loaded UGV is about to cross it.
+- **Done when:** Reset, triage, Play plays the whole script the same way three times in a row.
 
-**Sunday until 12:00:** no new features. Record the demo video, finish the deck, and upload both well before 12:00.
+**B2. More event types.** Owner: Vashti. ⬜ Needs A1.
+- Handlers `casualty_reported`, `vehicle_requested` and `vehicle_added` in `scripts/events.py`, with their tests.
+- A "Request UGVs" button on the C2 page (`visualizer/src/pages/c2.tsx`) that writes a live `vehicle_requested`
+  event through `sim.ts`. Not by voice: voice stays read-only (Layer 5).
+- **Done when:** the button brings new UGVs onto the map after the delay, and dispatch uses them.
 
-**How to split once the simulator decisions are taken:**
-- simulator: clock, events, tick loop, vehicle movement (Layer 1);
-- missions and versioning in the C2 planner: second leg, life cycle, bridge collapse, re-plan (Layers 2–3);
-- operator screen: clock controls, event buttons, time travel (Layer 4);
-- clinical realism, after the MVP: MIST reports, triage labels, capabilities (7.2–7.4).
+**B3. Voice.** Owner: Vashti. 🟡 Working; optional extras.
+- ✅ Ukrainian: questions asked in Ukrainian are answered in Ukrainian (`scripts/voice_text.py`).
+- A question that reads the applied events ("what happened in the last ten minutes?") in `scripts/voice_query.py`.
 
-**Parallel work once the common core exists** (simulator, states, events). Each item touches its own files and
-can be picked up by anyone:
-- **Terrain modelling** (`build_roads.py`, `fetch_osm.py`): off-road paths for UGVs (fields, footpaths), minor roads
-  and tracks across the whole sector (today only near the front), and better speeds per road class and surface
-  (today our own assumptions; OSM rarely has `maxspeed`).
+**C1. Radio.** Owner: Adini. ⬜ Needs A1 and A2.
+- A recorded radio message (a MIST report, spoken) becomes text, then an `observation` event (and a
+  `casualty_reported` if the casualty is new).
+- Reuse Parakeet: add `POST /radio` to `scripts/voice_server.py`; `Models.transcribe` already turns a WAV into text.
+  Text to MARCH letters by keywords (bleed → `M`, airway → `A`, not breathing → `R`...), agreed with A2.
+- A "Radio" button on the C2 page that plays a prepared clip from `data/radio/` and sends it.
+- **Done when:** playing a clip adds an observation to the right casualty card within one tick.
 
-**Cleanup:** ✅ done (`main.py` deleted, `pandas` declared, README "how to run", Cypher helpers in
-`scripts/cypher.py`, `CAPS` in `seed_scenario.py`).
+**C2. Photo on a casualty.** Owner: Adini. ⬜ Needs A2.
+- Scripted drone and app images in `visualizer/public/media/`; an observation's `media` is the path
+  (`/media/<file>.jpg`).
+- `inspectNode` in `visualizer/src/components/c2/inspector.ts`: for a `Casualty`, show the images of its
+  observations, newest first.
+- **Done when:** clicking the casualty from the drone event shows its photo.
+
+**D1. Video and deck.** Owner: Noo. ⬜ Uses 8.1; records after the freeze.
+
+### 8.4 Freeze and Sunday
+
+- **22:00 Saturday:** freeze. Only fixes after this. Run the script two or three times and record a backup take
+  the same night.
+- **Sunday morning:** final take, edit the video, finish the deck, upload both well before 12:00.
+
+### 8.5 Nice to have (only once 8.3 works)
+
+- **Time travel in the UI:** a commit picker that rewinds to before the bridge (`LOAD COMMIT`, then read with that
+  commit; both work). Shows TuringDB's versioning. Proposed owner: whoever is free first.
+- **Branches:** "one more UGV" replayed on a branch, with the lives-saved metric (7.7).
+- **Query time in ms** on screen.
+- **Threat zone** (7.1).
+- **Run log and replay, for after-action review** (decided 3 Oct). TuringDB's history is the audit tool, but in
+  memory it lasts only until TuringDB stops, and on disk it costs ~30 MB per commit. So we keep the recipe, not the
+  database:
+  1. *Record:* the simulator writes `runs/<date>.jsonl`: header (git commit, start), every triage with its scenario
+     minute, play/pause/speed/reset, and milestones (dispatch, pickup, handover, delivery).
+  2. *Replay:* `scripts/replay.py runs/<file>` warns if the code is not the recorded commit, builds a clean graph in
+     memory and applies the triages minute by minute without real-time waits, to audit with time travel.
+  3. *Summary:* per casualty, injury → triage → pickup → delivery in minutes, and golden hour met or not.
+  4. *Check:* a test that records a run, replays it, and gets the same final state and number of minutes.
+- **Terrain modelling** (`build_roads.py`, `fetch_osm.py`): off-road paths for UGVs, minor roads across the whole
+  sector, better speeds per road class and surface.
+- **The C2 manual planner:** fastest route with per-vehicle speed (7.12); MIST and MITT clinical content (7.2–7.4);
+  the extra scenarios in `docs/SCENARIOS.md`.
+
+### 8.6 Done so far, by layer
+
+- **Layer 0, foundation** ✅: `run.sh` starts TuringDB in memory and rebuilds graph `evac` from the repo
+  (`scripts/build_graph.sh`: OSM roads from `data/osm/roads.json` via `build_roads.py`, then `seed_scenario.py`;
+  4,098 junctions, 9,142 roads). Route search in minutes (`routing.py`).
+- **Layer 1, simulator** ✅: `Clock` shared with the screen; play, pause, speed and reset; tick loop in
+  `scripts/simulate.py` (dispatch, movement, pickups, drops, handover, beds), one commit per tick; a rejected pass is
+  retried. Tests: `tests/test_simulate.py`.
+- **Layer 2, missions** ✅: automatic dispatch (priority, capacity, range × battery, threat, relay rules); second leg
+  from a handover point; mission life cycle `planned → active → done`. The manual C2 planner stays behind "Manual".
+- **Layer 3, changing events** ⬜: now tasks A1 and B2; time travel and branches are in 8.5.
+- **Layer 4, operator screen** ✅: 2D and 3D map with terrain and arrow-key camera, triage cards with MIST, clock
+  controls, query bar, node inspector, live routes per vehicle. End-to-end test
+  `visualizer/tests/simulator.spec.ts` (needs `./run.sh` running).
+- **Layer 5, bonus** 🟡: ✅ spoken or typed questions on the C2 page (`scripts/voice_query.py`, `voice_server.py`):
+  Parakeet speech to text, then the nearest of ~24 known questions by MiniLM similarity, answered from the graph.
+  Retrieval, not a generative LLM; read-only. Radio, imagery and more UGVs are now tasks C1, C2 and B2.
