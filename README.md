@@ -13,11 +13,15 @@ Needs [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install
 
 ```bash
 uv sync
-./run.sh            # then open http://localhost:5180/?graph=evac
+./run.sh            # then open http://localhost:5180/?graph=evac       the plain scenario, free play
+                    #       or   http://localhost:5180/?graph=evac_demo  the scripted demo
 ```
 
-`run.sh` starts TuringDB **in memory**, builds the scenario graph `evac` from the repo (`data/osm/roads.json` +
-`scripts/seed_scenario.py`, a few seconds), then the simulator and the C2 screen. Everyone who pulls the same commit
+`run.sh` starts TuringDB **in memory**, builds two scenario graphs from the repo (`data/osm/roads.json` +
+`scripts/seed_scenario.py`, a few seconds each), then a simulator for each and the C2 screen. `evac` is the plain
+scenario: five casualties, nothing else happens. `evac_demo` also plays the scripted demo (`scripts/demo_script.py`:
+casualties arriving, a road closed and reopened, a UGV whose battery dies with a casualty on board); Reset puts the
+script back. `DEMO_GRAPH=` (empty) skips it. Everyone who pulls the same commit
 runs the same graph; nothing is stored on disk, and the run history lasts until TuringDB stops. Why in memory: on disk
 every TuringDB commit costs ~30 MB, and the simulator makes one per scenario minute.
 
@@ -64,15 +68,18 @@ command dispatch, assigned vehicle movement/pickup, receiving-team reply and han
 Each casualty's messages stay readable when you switch cases. Click its title to collapse or expand the conversation, or × to close it.
 History is captured while this page is open; reset starts a new history, and page reload starts a new session.
 
-Medic teams and command are separate stationary graph entities. Existing simulation and routing still move
+Field reports come from the soldier with the casualty and go to the medical coordinator at R1-A (`MED-R1-A`); no medic
+is placed with a casualty. Medic teams at the medical points and command are separate stationary graph entities. Existing simulation and routing still move
 vehicles and casualties and choose destinations. Radio text is simulated from graph state; no live radio is connected.
+The panel reads each active mission, casualty status, vehicle position and destination together in one query, polled
+every second during playback, so a dispatch shows up even when the map's mission nodes lag behind.
 
 ### Entity info boxes
 
 Click a vehicle, medical point, medic team or the command post to open its info box over the map (× or Esc closes it).
 A vehicle shows casualties aboard out of capacity, who it is collecting and where it delivers, fuel or battery
 (`battery_pct`), range left, speed and damage. A medical point shows patients held, casualties on the way, free beds,
-medics available, capabilities, equipment and vehicles waiting there. A medic team shows its casualty or its point;
+medics available, capabilities, equipment and vehicles waiting there. A medic team shows its point;
 command shows the scenario totals. `Vehicle.damage` and `MedicalPoint.equipment` are placeholder seed values in
 `scripts/seed_scenario.py`; the simulator does not change them.
 
@@ -112,6 +119,7 @@ cd visualizer && npx playwright test tests/simulator.spec.ts
 | `scripts/seed_scenario.py` | medical points, vehicles, untriaged casualties with MIST reports, simulator clock |
 | `scripts/routing.py` | route search with computed travel time, automatic dispatch, road closure |
 | `scripts/simulate.py` | the simulator: ticks, movement, pickups and drops, reset |
+| `scripts/events.py`, `demo_script.py` | events during a run (road closed or slowed, new casualty, battery depleted): applied on the tick, re-routing, stranded casualties, reset; the scripted demo |
 | `scripts/seed_toy_graph.py` | 13-junction test graph, no OSM needed |
 | `scripts/voice_query.py`, `voice_text.py`, `voice_server.py` | spoken questions in English and Ukrainian: intents, answers from the graph, all Ukrainian text, Parakeet + MiniLM server |
 | `scripts/extract_basemap.py` | offline basemap for the map |

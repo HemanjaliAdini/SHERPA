@@ -113,6 +113,13 @@ An ucranian guy?
 **9. Team**
 > Noo builds deployable field hospital systems. Adolfo builds AI that runs locally and has to be reliable. [Rest of the team if someone joins.]
 
+| | Background | Detail | LinkedIn |
+|---|---|---|---|
+| Noo Rashbass | | | |
+| Adolfo Viguera | | | |
+| Vashti | | | |
+| Hemanjali Adini | | | |
+
 **10. Call to action**
 > We're looking for three things: partners with real field data, a pilot with a medical unit, and funding to take this to a field test next year.
 

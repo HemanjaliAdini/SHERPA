@@ -1,22 +1,27 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { C2Map, type C2MapHandle } from '@/components/c2/c2-map'
 import { CasualtyQueue } from '@/components/c2/casualty-queue'
 import {
   EDGE_STYLE,
+  EVENT_COLOR,
   FACILITY_COLOR,
   FACILITY_LABEL,
   HIGHLIGHT_COLOR,
   JUNCTION_COLOR,
   ROAD_BASE_COLOR,
   ROAD_CLOSED_COLOR,
+  ROAD_DELAYED_COLOR,
   THREAT_MARKER_COLOR,
   TRIAGE_COLOR,
   VEHICLE_COLOR,
   threatColor,
 } from '@/components/c2/colors'
+import { type SimEvent, fetchEvents } from '@/components/c2/events'
+import { EventsPanel } from '@/components/c2/events-panel'
 import { fetchGraph } from '@/components/c2/graph-data'
+import { mapAlerts } from '@/components/c2/map-alerts'
 import { Kbd, MapControls } from '@/components/c2/map-controls'
 import { MissionPlanner } from '@/components/c2/mission-planner'
 import type { Plan } from '@/components/c2/planner'
@@ -95,12 +100,15 @@ const Legend = () => (
     ))}
     <NodeKey color={VEHICLE_COLOR.ugv} label="Vehicle: UGV" />
     <NodeKey color={VEHICLE_COLOR.ambulance} label="Vehicle: ambulance" />
+    <NodeKey color={VEHICLE_COLOR.disabled} label="Vehicle: stopped (battery)" />
     <NodeKey color="#22d3ee" label="Medic team" />
     <NodeKey color="#34d399" label="Command" />
     <NodeKey color={THREAT_MARKER_COLOR} label="Threat" />
+    <NodeKey color={EVENT_COLOR} label="Event alert, where it happened" />
     <SectionTitle>Edges</SectionTitle>
     <EdgeKey color={ROAD_BASE_COLOR} label="ROAD" />
-    <EdgeKey color={ROAD_CLOSED_COLOR} dashed label="ROAD (closed)" />
+    <EdgeKey color={ROAD_CLOSED_COLOR} dashed label="ROAD (closed by an event)" />
+    <EdgeKey color={ROAD_DELAYED_COLOR} label="ROAD (slowed by an event)" />
     <div
       className="mt-1 mb-1 h-1.5 w-full rounded"
       style={{
@@ -135,6 +143,12 @@ const KEY_HELP = [
   'L legend',
 ].join(' \u00b7 ')
 
+// How long a new event's alert stays open and pulsing on the map (at most: a newer event closes it)
+const FRESH_ALERT_MS = 12000
+const FRESH_BATCH_MS = 500
+// A resolved event's alert stays on the map, green, this long, then goes (the events panel keeps it)
+const RESOLVED_ALERT_MS = 10000
+
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')
@@ -151,6 +165,10 @@ export const TC2Page = () => {
   const [focusNid, setFocusNid] = useState<number | null>(null)
   const [planningFor, setPlanningFor] = useState<Casualty | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  // Events applied while the page is open: their map alert is drawn open and pulsing for a while
+  const [freshEvents, setFreshEvents] = useState<Set<string>>(() => new Set())
+  // Events resolved in the last RESOLVED_ALERT_MS: the only resolved ones still drawn on the map
+  const [justResolved, setJustResolved] = useState<Set<string>>(() => new Set())
   const [mode, setMode] = useState<ViewMode>('3d')
   const [terrainScale, setTerrainScale] = useState(TERRAIN_SCALES[2])
   const cycleTerrain = () => setTerrainScale(nextTerrainScale)
@@ -188,15 +206,21 @@ export const TC2Page = () => {
   const cardNode = focusNode && ENTITY_CARD_LABELS.has(focusNode.label) ? focusNode : undefined
   const radioHistory = useRadioHistory(graph.data, scenario.data, now, graphName)
   const untriaged = scenario.data?.casualties.filter((c) => c.status === 'reported').length ?? 0
+  const events = useQuery({
+    queryKey: ['c2-events', graphName, change],
+    queryFn: () => fetchEvents(graphName, change),
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: refresh,
+  })
   const refreshAll = () => {
-    for (const key of ['c2-sim', 'c2-graph', 'c2-scenario'])
+    for (const key of ['c2-sim', 'c2-graph', 'c2-scenario', 'c2-events'])
       queryClient.invalidateQueries({ queryKey: [key] })
   }
   // Every tick (and a reset) changes the clock: refresh the map and the queue once per change
   const clockTime = sim.data?.now.getTime()
   // biome-ignore lint/correctness/useExhaustiveDependencies: refetch on each clock change only
   useEffect(() => {
-    for (const key of ['c2-graph', 'c2-scenario'])
+    for (const key of ['c2-graph', 'c2-scenario', 'c2-events'])
       queryClient.invalidateQueries({ queryKey: [key] })
   }, [clockTime])
   const act = (work: Promise<void>) => {
@@ -251,6 +275,34 @@ export const TC2Page = () => {
     selectNode(c.nid)
     mapRef.current?.focusNodes(c.junction === null ? [c.nid] : [c.nid, c.junction])
   }
+  const locateEvent = (e: SimEvent) => {
+    selectNode(e.nid)
+    mapRef.current?.focusNodes([e.nid])
+  }
+  // Only the latest events stay open: events applied in one refresh form one batch, a later one replaces it
+  const freshBatch = useRef(0)
+  const eventApplied = useCallback((e: SimEvent) => {
+    // Keyed by id and status: the alert pulses again when the event is resolved
+    const key = `${e.id}:${e.status}`
+    const without = (ids: Set<string>, k: string) => {
+      const left = new Set(ids)
+      left.delete(k)
+      return left
+    }
+    const batch = Date.now()
+    const sameBatch = batch - freshBatch.current < FRESH_BATCH_MS
+    freshBatch.current = batch
+    setFreshEvents((ids) => (sameBatch ? new Set(ids).add(key) : new Set([key])))
+    setTimeout(() => setFreshEvents((ids) => without(ids, key)), FRESH_ALERT_MS)
+    if (e.status === 'resolved') {
+      setJustResolved((ids) => new Set(ids).add(e.id))
+      setTimeout(() => setJustResolved((ids) => without(ids, e.id)), RESOLVED_ALERT_MS)
+    }
+  }, [])
+  const alerts = useMemo(
+    () => mapAlerts(graph.data, events.data ?? [], freshEvents, justResolved),
+    [graph.data, events.data, freshEvents, justResolved]
+  )
   const previewPlan = useCallback((preview: Selection | null) => {
     setSelection(preview)
     if (preview) setFitRequest((n) => n + 1)
@@ -317,6 +369,7 @@ export const TC2Page = () => {
     graphName,
     change,
     fitRequest,
+    alerts,
   }
 
   const unplaced = graph.data?.unplaced
@@ -394,6 +447,7 @@ export const TC2Page = () => {
               if (picked?.nodes.size) setFitRequest((n) => n + 1)
             }}
           />
+          <EventsPanel events={events.data ?? []} onLocate={locateEvent} onApplied={eventApplied} />
         </div>
 
         <div className="bg-grey-900/90 text-content-fourth border-grey-700 absolute top-3 right-3 z-[1000] rounded-md border px-3 py-1.5 text-xs">

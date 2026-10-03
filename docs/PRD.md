@@ -144,15 +144,17 @@ Status: ✅ in the graph today · 🔜 decided, not built yet · ❓ depends on 
                 medics_total})                                                     🔜
 
 (:Vehicle {id, type, lat, lon, litter_capacity, ambulatory_capacity, range_km,     ✅
-           battery_pct, max_threat, speed_kmh, status, damage, base})
+           battery_pct, max_threat, speed_kmh, status, damage, base,
+           disabled_by})                                                           ✅ A1
 
 (:Casualty {id, lat, lon, time_of_injury, status, triage_category, mobility,       ✅
             mist_mechanism, mist_injuries, mist_signs, mist_treatment,
             recommended_category, recommended_rank, recommendation_confidence,
-            recommendation_reason,
-            event_id})                                                             🔜 A2, A1
+            recommendation_reason,                                                 🔜 A2
+            event_id, stranded_by, stranded_from})                                 ✅ A1, B2
 
-(:Event {id, at, type, payload, status, source, applied_at, error})                🔜 A1
+(:Event {id, at, type, payload, status, source, applied_at, error, summary,       ✅ A1
+         lat, lon, resolved_at, resolution})
 (:Observation {id, at, received_at, source, finding, answer, confidence,          🔜 A2
                lat, lon, media, event_id})
 
@@ -162,10 +164,10 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 
 (:Threat {id, type, level, active})                                                ✅
 
-(:Mission {id, status, created_at, eta, progress_m})                               ✅ (+ status cancelled 🔜 A1)
+(:Mission {id, status, created_at, eta, progress_m})                               ✅ (+ status cancelled, blocked ✅ A1)
 
 (:Clock {id, now})                     written only by the simulator              ✅
-(:SimControl {id, running, speed, reset})   written only by the C2 screen         ✅
+(:SimControl {id, running, speed, reset, script})   written only by the C2 screen  ✅
 ```
 
 ### Relationships
@@ -177,6 +179,7 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 
 (:Casualty | :Vehicle | :MedicalPoint)-[:NEAR {distance_m}]->(:Junction)           ✅
 (:Threat)-[:AFFECTS]->(:Junction)                                                  ✅
+(:Event)-[:AFFECTS]->(:Junction)        once applied: where it happened, places it on the map  ✅ A1
 
 (:Mission)-[:USES]->(:Vehicle)                                                     ✅
 (:Mission)-[:PICKS_UP {order, status, eta}]->(:Casualty)                           ✅
@@ -197,15 +200,21 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 - **`ROAD`:** one edge per permitted direction. A two-way road is two edges with the same `osm_way_id`.
   - `speed_*_kmh` are the road's speed caps per vehicle type, from road class and surface.
   - `delay_factor` is 1.0 normally; raise it for a jam, damage or threat.
-  - `status` is `open` or `closed`.
+  - `status` is `open` or `closed`. `closed_by` / `delayed_by` name the event that closed or slowed it (reset undoes
+    exactly those roads).
   - `geometry` is the text `"lat,lon;lat,lon;..."`.
 - **`Vehicle.speed_kmh`:** the vehicle's own current speed (it drops with low battery, for example). `type` is `ugv`
-  or `ambulance`. `status` is `idle` or `tasked`; also `reserve`, `requested` (a reserve
-  vehicle on its way, with `arrives_at` and `arrive_point`) and `lost`, see "Vehicle bases" in the README.
+  or `ambulance`. `status` is `idle`, `tasked`, or `disabled` when an event stopped it for good (`disabled_by` names
+  the event; it stays where it stopped). A held-back vehicle is `reserve`, then `requested` on its way
+  (with `arrives_at` and `arrive_point`); see "Vehicle bases" in the README.
 - **`Casualty.status`:** `reported` (untriaged) → `awaiting_pickup` → `assigned` → `in_transit` → `delivered`, or back
   to `awaiting_pickup` when dropped at a handover or collection point; `dead` when triaged `DEAD`. Triage labels
-  depend on 7.2.
-- **`Mission.status`:** `planned` → `active` → `done`. `progress_m` is the distance driven along its `ROUTE_STEP`s.
+  depend on 7.2. `stranded_by` (the event) and `stranded_from` (the vehicle type) are set while a casualty waits
+  where its vehicle stopped; they clear once another vehicle picks it up.
+- **`Mission.status`:** `planned` → `active` → `done`; `cancelled` when a closed road breaks it before the pickup,
+  or when its vehicle stops;
+  `blocked` when a closed road leaves a loaded vehicle no route to any destination (it waits at the last junction it
+  passed). `progress_m` is the distance driven along its `ROUTE_STEP`s.
 - **`SimControl.speed`:** scenario minutes per real second (default 1). `reset = true` asks the simulator to put the
   scenario back to its start, as one commit; the history is kept.
 - **Types:** lists (`capabilities`) and `datetime(...)` (`time_of_injury`) are native TuringDB types (6.4).
@@ -214,15 +223,20 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
 
 - **`Event` fields:** `id` (`EV-<n>` for scripted ones, `EV-live-<ms>` for live ones), `at` (scenario `datetime`,
   when it takes effect), `type` (table below), `payload` (a JSON string: TuringDB properties are flat), `status`
-  (`pending` → `applied` or `failed`), `source` (`script`, `button`, `radio`), `applied_at`, `error`.
+  (`pending` → `applied` or `failed`; `applied` → `resolved` once its effect is over), `source` (`script`, `button`, `radio`), `applied_at`, `error`, and, written
+  by the simulator when applied, `summary` (one line on what happened, shown on screen) and `lat`/`lon` for an
+  event that happened at one point.
 - **Who writes what:** producers create `Event`s with `status = 'pending'`. Only the simulator
   (`scripts/events.py`, called from `tick_writes`) applies them and changes their `status`.
 - **Order:** on each tick, every pending event with `at <= Clock.now`, by `at`, before dispatch.
 
 | `type` | `payload` | Effect when applied | Producer |
 |---|---|---|---|
-| `road_closed` | `{osm_way_id}` | Every `ROAD` with that `osm_way_id` gets `status = 'closed'` and `closed_by = <event id>`; then the re-route rule below. | script, button |
-| `casualty_reported` | `{id, lat, lon, time_of_injury, mist_mechanism, mist_injuries, mist_signs, mist_treatment}` | New `Casualty` with `status = 'reported'`, linked `NEAR` its junction (`snap` in `seed_scenario.py`). | script, radio |
+| `road_closed` ✅ | `{osm_way_id, reason}` | Every `ROAD` with that `osm_way_id` gets `status = 'closed'` and `closed_by = <event id>`; then the re-route rule below. | script, button |
+| `road_delayed` ✅ | `{osm_way_id, delay_factor, reason}` | A blockage that slows: every `ROAD` with that `osm_way_id` gets that `delay_factor` (1 or more) and `delayed_by = <event id>`. Vehicles on it slow down; dispatch weighs it; no re-route. Reset sets `delay_factor` back to 1.0. | script, button |
+| `road_reopened` ✅ | `{osm_way_id, reason}` | The road is open again at normal speed: undoes `road_closed` and `road_delayed` on that way and resolves those events; `blocked` missions get a route again and drive on. A road neither closed nor slowed fails. | script, button |
+| `casualty_reported` ✅ | `{id, lat, lon, time_of_injury, mist_mechanism, mist_injuries, mist_signs, mist_treatment}` | New `Casualty` with `status = 'reported'` and `event_id`, linked `NEAR` its junction (`snap` in `seed_scenario.py`); the medic triages it on screen. Without `time_of_injury`, the event's minute. An `id` that exists fails. | script, radio |
+| `battery_depleted` ✅ | `{vehicle_id or vehicle_type, reason}` | The vehicle stops where it is: `status = 'disabled'`, `battery_pct = 0`, `disabled_by`. Its mission is `cancelled`; a casualty not yet picked up goes back to `awaiting_pickup`; a casualty on board is left there, `awaiting_pickup` and stranded (rule below). With `vehicle_type` (a script cannot know who is loaded at that minute) it stops the first vehicle of that type carrying a casualty, else the first on a mission. | script |
 | `observation` | `{casualty_id?, source, finding, answer, confidence?, lat, lon, observed_at?, media?}` (`answer`: yes / no / unsure; `confidence` only from the drone) | New `Observation`, associated to a casualty (rule in "Sensor fusion"), `-[:OF]->` its `Finding`; re-fuse that casualty and update its recommendation. | script (drone, app), radio |
 | `vehicle_requested` | `{type, count, delay_min, at_point}` | Creates `count` `vehicle_added` events at `at + delay_min`. | button |
 | `vehicle_added` | `{id, type, at_point}` | New idle `Vehicle` at the medical point `at_point`, with the seed values of its type. | `vehicle_requested` |
@@ -232,9 +246,28 @@ Doctrine graph (Noo, branch feat/triage-app, read-only, loaded at build):       
   `assigned` (not picked up), the mission becomes `cancelled`, the casualty `awaiting_pickup` and the vehicle `idle`,
   and the same tick's dispatch plans it again on the open roads. If the casualty is `in_transit`, the mission gets new
   `ROUTE_STEP`s from that junction to the same destination (`route()` in `routing.py`) and `progress_m = 0`; with no
-  route, to the nearest reachable destination of its type.
-- **Reset** (`reset_writes`): scripted events go back to `pending` and live ones are deleted; nodes created by an
-  event (they carry `event_id`) are deleted with their edges; roads with a `closed_by` reopen.
+  route, to the nearest reachable destination of its type; with none reachable, the mission becomes `blocked` and the
+  vehicle waits there with its casualty.
+- **Resolved:** an applied event whose effect is over becomes `resolved`, with `resolved_at` and `resolution` (one
+  line): a closed or slowed road when a `road_reopened` opens it, a `casualty_reported` when that casualty reaches a
+  bed, a `battery_depleted` when every casualty it stranded is on board another vehicle (the vehicle stays stopped).
+  Checked at the end of each tick (`resolve_events`). On screen its alert turns green with how it ended.
+- **Stranded casualty:** dispatch takes stranded casualties before all others (their transport stopped under them
+  in the open; this is logistics, the medic's triage still orders everyone else), and only with a vehicle of the type
+  that left them (`stranded_from`: a UGV's casualty lies where UGVs were sent) while one of that type still works.
+- **Any road event:** `reason` is optional text shown on screen. `osm_way_id` 0 is refused: `build_roads.py` gives
+  that id to every gap-joining connector, so it is not one road. An applied event links `AFFECTS` to the junctions of
+  its road, which places it on the C2 map (closed roads red and slowed roads orange).
+- **On screen:** every event in effect is a red alert on the map where it happened (the road, the stopped vehicle,
+  the new casualty): open and pulsing when it has just happened, then a compact tag. Once resolved it turns green for
+  10 seconds, then leaves the map. Clicking an alert opens the event's card (what happened, how it ended, its
+  payload), which stays open and updates while the run goes on. The events panel lists the whole run, including what
+  is still to come and what is resolved; a click flies to an event.
+- **Reset** (`reset_writes` → `reset_events`): roads with a `closed_by` reopen, roads with a `delayed_by` go back to
+  `delay_factor` 1.0, stopped vehicles run again (seed battery), nobody is stranded, nodes created by an event (they carry `event_id`) are deleted with their edges, and every
+  `Event` is deleted and, on a demo graph (`SimControl.script`, set by `seed_scenario.py --demo`), the script's are
+  recreated `pending` from `scripts/demo_script.py` (so live ones go, and an
+  edited script takes effect on Reset without rebuilding the graph).
 
 ### Sensor fusion and the triage recommendation (A2)
 
@@ -324,14 +357,16 @@ alone is left behind. Write `(Casualty)-[:HAS_FINDING {answer, confidence, sourc
 **Confidence of the recommendation** (informs the coordinator; never changes the category):
 - `confidence = 1 − Π(1 − c)` over the sources answering `yes` to the Finding that sets the category (drone: its own
   `c`; app: 0.9). If several Findings reach that category, the highest.
-- Shown as **high** ≥ 0.8, **medium** 0.5–0.8, **low** < 0.5, with the number (proposal, 7.13).
+- Shown as the number only (e.g. 0.95). No high / medium / low words: they hide detail and need cut-offs we would
+  have to invent.
 
 | Case | Sources | To the engine | Recommendation | Confidence |
 |---|---|---|---|---|
-| CAS-6 | drone bleeding yes 0.5 + app bleeding yes | yes | T1 | 1 − (0.5 × 0.1) = 0.95, high |
-| CAS-7 | drone bleeding yes 0.5, nobody else | yes | T1 | 0.5, medium |
-| CAS-8 | app breathing distress yes | yes | what doctrine gives for it | 0.9, high |
-| CAS-9 | drone sees someone lying 0.8, nothing serious | `unsure` on the serious Findings | none: "coordinator decides" | — |
+| CAS-6 | drone bleeding yes 0.5 + app bleeding yes | yes | T1 | 1 − (0.5 × 0.1) = 0.95 |
+| CAS-7 | drone bleeding yes 0.5, nobody else | yes | T1 | 0.5 |
+| CAS-8 | app breathing distress yes | yes | T1 (tension pneumothorax) | 0.9 |
+| CAS-9 | drone sees someone lying 0.8, nothing serious | `unsure` on the serious Findings; `mobility` no | none: "coordinator decides" | — |
+| CAS-11 | drone sees someone walking 0.7 (`Walking`), nothing serious | `mobility` yes | T3 (MITT: walks) | 0.7 |
 | CAS-10 | drone bleeding yes 0.8 + app bleeding no | `unsure` | none from bleeding | "sources disagree: drone yes 0.8 · app no" |
 
 **Recommendation (step 4):**
@@ -342,6 +377,9 @@ alone is left behind. Write `(Casualty)-[:HAS_FINDING {answer, confidence, sourc
 - Stored on the casualty: `recommended_category`, `recommended_rank`, `recommendation_confidence`,
   `recommendation_reason` (the `yes` Findings with their sources and confidences, the injuries they indicate, and any
   "sources disagree").
+- **Our own rule from MITT, after the doctrine** (6.18): if the doctrine gives no category and `mobility` is `yes`
+  (walks), recommend **T3**, reason "walks (MITT)". The doctrine never reaches Minimal (7.15), so this fills T3. A
+  doctrine T1 or T2 always wins.
 - No category reached: "no recommendation: doctrine does not rank this, coordinator decides". Never "can wait"
   (`DECISION-SPEC.md` section 5).
 - Recomputed whenever an observation for that casualty is applied, so late information updates it.
@@ -351,15 +389,25 @@ goes to the nearest casualty within 50 m of its `lat, lon`; if none, it creates 
 (`status = 'reported'`, `event_id` set). Seen twice, counted once. Later, not now: time and position uncertainty.
 
 **On the C2 screen:** the queue puts untriaged casualties first, ordered by `recommended_rank`, then the MARCH letter
-of their most urgent present Finding, then time of injury. Each card shows the recommendation, its confidence (high,
-medium, low, with the number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
+of their most urgent present Finding, then time of injury. Each card shows the recommendation, its confidence (the
+number), its reasons, a chip per source (drone, app) and any "sources disagree". The triage buttons come preselected with the recommendation (and litter or
 ambulatory from `mobility`): one click accepts, or the coordinator picks another.
 
-**Drone images (SARD).** The Search and Rescue Image Dataset (IEEE DataPort, DOI 10.21227/ahxm-k331): 1,981 drone
-images with people labelled Standing, Walking, Running, Sitting, Lying or Not Defined; needs an IEEE DataPort
-subscription. Options: (A) now: a few images with their labels used as the drone's output; (B) later, Adolfo, if
-there is time: a pretrained person detector (YOLO) run offline on 5–10 drone frames for real boxes and confidences,
-posture from the label; (C) after the hackathon: fine-tune on SARD to detect lying people.
+**Drone images (SARD).** We use **SAR Detection** (Roboflow Universe, CC BY 4.0,
+https://universe.roboflow.com/rtiaditya-yoga-darmawan/sar-detection, version 3): the SARD drone images (1,980) with
+each person labelled by posture: `laying_down` (1,569), `stands` (1,822), `Walking` (1,288), `not_defined` (976),
+`seated` (621), `Running` (78). Downloaded in YOLOv8 format to `data/vision/` (git-ignored, ~0.3 GB; not in the repo:
+each teammate downloads it from that link). Cite as SARD (IEEE DataPort, DOI 10.21227/ahxm-k331) via that Roboflow
+copy.
+- **Now (decided 3 Oct): the labels are the drone's output.** A few images, chosen by posture, stand in for the
+  drone in the demo script: posture → Finding below; the confidence is written in the script (labels carry none).
+  People are small in the frame: crop around the box or draw it for the card (A2e).
+- **Posture → Finding:** `laying_down` → `mobility` = no; `Walking`, `Running` → `mobility` = yes; `stands`,
+  `seated`, `not_defined` → `mobility` = unsure.
+- **Later, when there is time (A2f):** real detections with real confidences, either the trained model
+  `sar-detection/3` run locally with Roboflow's `inference` library (weights download once with an API key, then
+  offline), or our own YOLOv8 trained on `data/vision/` on the Mac. Not via a cloud API during the demo.
+- Rejected: the IEEE DataPort original (paid); `sard_yolo` on Roboflow (one class, `person`, no posture).
 
 **Precedent.** Team Chiron (CMU, Pittsburgh), 4th in round 1 of the DARPA Triage Challenge, fused per-sign vision
 models from a robot with a Bayesian network written by hand with medics, no training. Correct signs went from 14 %
@@ -393,7 +441,7 @@ Each one: what we chose and why. Do not reopen without a new fact.
      The weight must be one stored property; an expression such as `length_m / speed_ugv_kmh` is a parse error.
      So it can find the shortest or the fastest-per-type route, but not the fastest for one specific vehicle.
 2. **The system does logistics, the medic does triage** (requirements 2–3).
-   - *Pickup order:* by triage category, then time since injury.
+   - *Pickup order:* by triage category, then time since injury; a stranded casualty first (section 5, Events).
    - *Medical point:* among points with the needed capability, operational and with a free bed, the one with the
      fewest route minutes.
    - *Vehicle:* the one that can carry the casualty (stretcher or seat), is within range and gives the fastest
@@ -439,7 +487,7 @@ Each one: what we chose and why. Do not reopen without a new fact.
     - *Why:* speed matters, and the rules come from published doctrine with page and quote on every line, the
       medical knowledge we lack. Deterministic and explainable: every recommendation lists its findings and sources.
     - *Caveats:* nothing in the graph is clinically signed off yet; only 8 of 37 TCCC findings reach a category, so
-      the demo uses findings that do (7.14).
+      the demo uses findings that do (7.15).
     - *Rejected:* our own ad-hoc MARCH ranking (no clinical basis); a learned model (no data, not explainable).
 14. **Every source answers Noo's `Finding`s with yes / no / unsure; fusion gives the engine one answer per Finding,
     and the confidence only informs** (3 Oct; rule in section 5). One `yes` is enough (as in the engine), a `yes`
@@ -457,6 +505,10 @@ Each one: what we chose and why. Do not reopen without a new fact.
     soldiers on the spot with the triage app (radio reports later, 6.17). This is why sensor fusion exists in this product.
 17. **Radio is a future source, not in the demo** (3 Oct). Not in the story, and it depended on two other tasks.
     In the pitch: speech to text, then an LLM extracts `Finding`s from the report; the doctrine rules still decide.
+18. **"Walks → T3" from MITT, after the doctrine** (3 Oct). Rules we add come from published triage tools, never
+    invented. MITT (the NHS Major Incident Triage Tool, section 3) sends walking casualties to T3 after catastrophic
+    haemorrhage. It fills the gap left by the doctrine, which never reaches Minimal, and uses `mobility`, which the
+    drone (SAR Detection postures) and the app give.
 
 ---
 
@@ -487,8 +539,13 @@ To settle together. None blocks the demo now.
      extra vehicle, compared with the base on this metric.
 8. ✅ *Resolved by 6.11 (contract in section 5).* **Event format** for Layer 1: what a timed event looks like (time, type, payload). It must include speed changes
    and delays, not only new casualties and closures, or the demo never shows travel time changing.
-9. ✅ *Used in the demo (8.1).* **The bridge for the collapse event:** proposal `osm_way_id` 1297140381, the secondary road Robotyne → Orikhiv,
+9. ✅ *Measured (A1): not used in the demo.* **The bridge for the collapse event:** proposal `osm_way_id` 1297140381, the secondary road Robotyne → Orikhiv,
    about 500 m north of HP-1 (47.505 N, 35.813 E); mission routes from the front already cross it.
+   - *Found:* it is the only road link between the front and the rear. Closed, ambulances and UGV-1 can no longer
+     reach any collection point or HP-1 by any road (only UGV-2, parked at its south end, can), so nothing re-routes.
+     No other bridge on the mission routes has a detour either. The demo closes secondary road 1200760570 instead
+     (on six casualty → HP-1 legs, detour about +4 min; 8.1 step 4). Closing the bridge stays a valid event and is
+     tested (`tests/test_events.py`): a loaded ambulance crossing it becomes `blocked`.
 10. ✅ *Resolved by the simulator (6.8): UGVs drop at a relay point, an ambulance takes over.* **UGV to ambulance relay.** In `routing.py` a mission is one vehicle. The C2 planner already sends UGVs to a
     `handover` point (or a collection point) and ambulances to Role 1+; adopt that rule everywhere. UGVs have 25 km range and no point with
     `stabilisation` is within reach by real road, so on `evac3` the T2 casualties get "no resource" while UGV-2 sits
@@ -517,15 +574,29 @@ To settle together. None blocks the demo now.
       time fields on the C2 planner's (`tasked`, `eta` datetime).
     - *Seen once, not reproduced:* the planner showed UGV-1 selected and created the mission with AMB-1. Probably a
       race between the vehicle list refresh and "Create mission". For Noo.
-13. **Casualty radio panel (3 Oct).** Selecting a casualty opens one sidebar conversation. Messages show
-    sender, recipient and scenario timestamp for report, medic response, recorded triage priority, dispatch,
-    vehicle pickup/transport and receiving-team handover. Per-casualty history is captured while the page is open,
-    preserved when switching cases, and cleared on reset. Map speech bubbles are no longer rendered.
+13. ✅ *Built (Adini).* **Casualty radio panel (3 Oct).** Selecting a casualty opens its simulated radio conversation
+    in a dropdown over the map. Messages show sender, recipient and scenario timestamp for the field report, the
+    coordinator's reply, recorded triage priority, dispatch, vehicle pickup and transport, and receiving-team
+    handover. Field reports come from the soldier with the casualty and go to the medical coordinator at R1-A
+    (`MED-R1-A`); no medic is placed with a casualty (6.16). Per-casualty history is captured while the page is open,
+    preserved when switching cases, and cleared on reset. No map speech bubbles. Not the same as radio as a fusion
+    source (6.17).
 
-13. **Confidence bands and drone confidences** (section 5): high ≥ 0.8, medium 0.5–0.8, low < 0.5, and the drone's
-    confidences in the demo script, are our proposal. To check with Noo and his frontline contact.
-14. **Doctrine coverage and sign-off.** Only 8 of 37 TCCC findings reach a category; 25 of 43 injuries have none
-    (`DECISION-SPEC.md` section 8). The demo uses findings that reach one. Medic sign-off is still needed.
+14. **Drone confidences** in the demo script (section 5) are our proposal. To check with Noo and his frontline
+    contact.
+15. **Doctrine coverage and sign-off.** Checked on `triage_v3.jsonl` with the engine's own logic (TCCC-cited links
+    only): **8 Findings reach a category.**
+    - Immediate (T1): `bleeding_severe`, `untreated_limb_haemorrhage`, `untreated_abdominal_or_pelvic_haemorrhage`
+      (massive haemorrhage); `airway_obstruction`, `airway_obstructed_or_impending` (airway obstruction);
+      `breathing_distress` (tension pneumothorax); `torso_trauma` + `breathing_distress` together (same).
+    - Delayed (T2): `torso_trauma` (torso injury), `eye_injury` (penetrating eye injury).
+    - **Nothing reaches Minimal (T3) or Expectant**: a minor casualty gets "no recommendation".
+    - No category: `haemorrhagic_shock`, `radial_pulse_weak`, `cold_shivering`, `head_injury_signs`,
+      `mental_status_altered`, `untreated_junctional_haemorrhage`, `chest_wound`; `conscious` / `unconscious` link to
+      no injury at all.
+    - For the demo: of the drone's Findings only `bleeding_severe` (camera) and `breathing_distress` (thermal) change
+      the category; lying, cold and responding show on the card as information.
+    - T3 now comes from MITT's "walks" rule (6.18). Medic sign-off of the doctrine still needed.
 
 ---
 
@@ -557,14 +628,30 @@ and gets them there, even when everything changes.
    *(Sensor fusion and Noo's doctrine graph.)*
 2. **The system gets each one to the right place.** Vehicles, routes, the UGV-to-ambulance relay, no manual
    logistics. *(What already works.)*
-3. **The world changes: the bridge is blown** (7.9, `osm_way_id` 1297140381) while a UGV carrying a T1 is about to
-   cross it (`road_closed`). The system re-routes and the casualty still arrives. **The strong moment.**
+3. **The world changes.** A road is cratered (`road_closed`; not the 7.9 bridge, which has no detour) and the system
+   re-routes around it; then a UGV's battery dies with a T1 on board (`battery_depleted`): the casualty is stranded,
+   goes to the top, and the other UGV fetches it. The casualty still arrives. **The strong moment.**
 4. **Close by answering objections.** "No network at the front?" The soldier's app gives the recommendation on the
    phone and sends when it can; the late answers fuse with their real time. "Who decides?" The coordinator; the
    system recommends from TCCC doctrine and shows why. "Other sources?" Radio: speech to text, an LLM extracts the
    findings, and the same rules decide; any new source only has to produce findings. Future: the soldier's app
    as a voice agent (pitch only). Optional: a voice question ("situation summary") and more
    UGVs (`vehicle_requested`).
+
+**Scripted now** (`scripts/demo_script.py`, played on graph `evac_demo`; `evac` is the plain scenario). Tuned with
+the triage in its `TRIAGE` (T1: CAS-1, CAS-3, CAS-6; T2: CAS-5, CAS-7; T3: CAS-2, CAS-4, CAS-8). Moment 1's
+observations and the app come with A2/C1; the script has these:
+
+- **05:38, 05:50, 06:02. New casualties** CAS-6, CAS-7, CAS-8 (`casualty_reported`, EV-1, EV-3, EV-4), untriaged:
+  each appears with an alert; the medic triages it and the system dispatches it.
+- **05:45. Road 1200760570 cratered** (EV-2): three vehicles on their way to pickups (M-1, M-3, M-4) are cancelled
+  and dispatched again around it in the same minute.
+- **06:05. UGV-1's battery dies with CAS-1 (T1) on board** (EV-5), ~2 km short of CCP-C. CAS-1 is stranded and goes
+  first; the free ambulance is not sent (stranded casualties wait for a UGV, section 5); UGV-2 is sent at 06:09,
+  picks CAS-1 up at 06:15, CCP-C at 06:17, where an ambulance takes over.
+- **06:20. Engineers fill the crater** (EV-6, `road_reopened`): the road is open again.
+- Each event shows as resolved once over: CAS-6 delivered 06:04, CAS-1 picked up 06:15, road reopened 06:20, CAS-7
+  06:48, CAS-8 08:25; everyone is delivered by 08:41.
 
 ### 8.2 How we work: everything that happens during a run is an event
 
@@ -583,7 +670,12 @@ Decision 6.11; the contract (event types, payloads, reset) is in section 5, "Eve
 **Order:** A1 and A2 first, in parallel; they unblock everyone. B, C and D can start drafting now and plug in when
 A1 lands.
 
-**A1. Event mechanism and the bridge.** Owner: Vashti (her list: "things happen during the simulation, blow up a bridge"). ⬜ Blocks B1, B2, C1.
+**A1. Event mechanism and the bridge.** Owner: Vashti (her list: "things happen during the simulation, blow up a bridge"). ✅ Done (3 Oct).
+- *Built as below, plus:* `road_delayed` (a blockage that slows a road), mission status `blocked`, `(:Event)-[:AFFECTS]->(:Junction)`,
+  and on the C2 screen an events panel (time, what, pending / applied / failed; click to find it on the map), an
+  alert on the map where each event happens, closed roads red and slowed roads orange. *Changed:* the demo closes road 1200760570, not
+  the bridge (7.9); simulator tests run without the script's events. Unknown types (`casualty_reported`,
+  `observation`, `vehicle_*` until B2 and A2 add them) are marked `failed` and the tick goes on.
 - Create `scripts/events.py`: `apply_due(client, now)` reads `Event`s with `status = 'pending'` and `at <= now`,
   ordered by `at`, calls the handler for each `type`, and sets `status = 'applied'` and `applied_at`. An unknown type
   or a failing handler sets `status = 'failed'` and `error`, and the tick goes on.
@@ -602,11 +694,14 @@ A1 lands.
 
 **A2. Sensor fusion and the triage recommendation.** Owner: Adolfo. ⬜ The contract is in section 5, "Sensor
 fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
-- **A2a. Doctrine graph in `evac`.** Copy `solider-triage-sideproject/app/assets/graph/triage_v3.jsonl` from branch
+- ✅ **A2a. Doctrine graph in `evac`.** Done: `data/doctrine/triage_v3.jsonl`, loaded by `scripts/seed_doctrine.py`
+  from `build_graph.sh` (all 472 nodes and 774 relationships; Q2 checked). Was: Copy `solider-triage-sideproject/app/assets/graph/triage_v3.jsonl` from branch
   `feat/triage-app` to `data/doctrine/triage_v3.jsonl`. Load it in `scripts/build_graph.sh` after the scenario: with
   `LOAD JSONL` if TuringDB can load into an existing graph, else a small `scripts/seed_doctrine.py` that creates its
   nodes and edges. **Done when:** Q2 of `DECISION-SPEC.md` (`bleeding_severe` → `immediate`) runs on `evac`.
-- **A2b. Fusion and recommendation, pure.** Create `scripts/fusion.py`: `fuse(observations)` → answer, confidence and disagreement per Finding
+- ✅ **A2b. Fusion and recommendation, pure.** Done: `scripts/fusion.py` (`fuse`, `recommend`, `doctrine_from_jsonl`),
+  `tests/test_fusion.py` (CAS-6 to CAS-11, newest per source, doctrine beats MITT, the Condition). For A2c: a
+  `load_doctrine(client)` reading the same rules from the graph. Was: Create `scripts/fusion.py`: `fuse(observations)` → answer, confidence and disagreement per Finding
   (rule in section 5) and `recommend(client, casualty_id)` → category, rank, reasons (Q1, Q2, Q11). Tests in
   `tests/test_fusion.py`: the five cases of the section 5 table (CAS-6 to CAS-10) give the answer, recommendation and confidence listed;
   only the newest observation per source counts; a casualty with no ranked Finding gets "no recommendation".
@@ -622,12 +717,16 @@ fusion". A2a and A2b need nothing else; A2c needs A1's `scripts/events.py`.
   SARD images (option A) under `visualizer/public/media/`.
 - **A2f. Optional, after the freeze items:** option B, a real pretrained detector on drone frames.
 
-**B1. The demo script.** Owner: Vashti. ⬜ Needs A1.
+**B1. The demo script.** Owner: Vashti. 🟡 `scripts/demo_script.py` plays the "Scripted now" list of 8.1 (EV-1 to EV-6), tuned
+with its `TRIAGE`; Reset reloads it. Seen live on screen once; the three runs in a row are still to do.
 - Create `scripts/demo_script.py` with `EVENTS` (format in section 5), starting from 8.1.
-- Run it on screen and tune the minutes so the bridge falls while a loaded UGV is about to cross it.
+- Run it on screen and tune the minutes so the edge case catches a loaded UGV (done: the battery event, 8.1 step 4;
+  the road closure catches empty vehicles only).
 - **Done when:** Reset, triage, Play plays the whole script the same way three times in a row.
 
-**B2. More event types.** Owner: Vashti. ⬜ Needs A1.
+**B2. More event types.** Owner: Vashti. 🟡 ✅ `casualty_reported` and `battery_depleted` (not in the first plan: a
+UGV stops with a casualty on board; stranded casualties are fetched first, by a UGV). ⬜ `vehicle_requested`,
+`vehicle_added` and the button.
 - Handlers `casualty_reported`, `vehicle_requested` and `vehicle_added` in `scripts/events.py`, with their tests.
 - A "Request UGVs" button on the C2 page (`visualizer/src/pages/c2.tsx`) that writes a live `vehicle_requested`
   event through `sim.ts`. Not by voice: voice stays read-only (Layer 5).
@@ -678,7 +777,8 @@ task.
 
 ### 8.6 Done so far, by layer
 
-- **Layer 0, foundation** ✅: `run.sh` starts TuringDB in memory and rebuilds graph `evac` from the repo
+- **Layer 0, foundation** ✅: `run.sh` starts TuringDB in memory and rebuilds graphs `evac` (plain scenario) and
+  `evac_demo` (with the scripted demo, `seed_scenario.py --demo`), each with its own simulator, from the repo
   (`scripts/build_graph.sh`: OSM roads from `data/osm/roads.json` via `build_roads.py`, then `seed_scenario.py`;
   4,098 junctions, 9,142 roads). Route search in minutes (`routing.py`).
 - **Layer 1, simulator** ✅: `Clock` shared with the screen; play, pause, speed and reset; tick loop in
@@ -686,7 +786,9 @@ task.
   retried. Tests: `tests/test_simulate.py`.
 - **Layer 2, missions** ✅: automatic dispatch (priority, capacity, range × battery, threat, relay rules); second leg
   from a handover point; mission life cycle `planned → active → done`. The manual C2 planner stays behind "Manual".
-- **Layer 3, changing events** ⬜: now tasks A1 and B2; time travel and branches are in 8.5.
+- **Layer 3, changing events** 🟡: ✅ A1 (`scripts/events.py`: road closures and blockages, re-routing, reset; seen
+  live on the map), ✅ new casualties during the run and a UGV whose battery dies (B2); B2 adds the vehicle requests;
+  time travel and branches are in 8.5.
 - **Layer 4, operator screen** ✅: 2D and 3D map with terrain and arrow-key camera, triage cards with MIST, clock
   controls, query bar, node inspector, live routes per vehicle. End-to-end test
   `visualizer/tests/simulator.spec.ts` (needs `./run.sh` running).

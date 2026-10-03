@@ -59,20 +59,24 @@ ROOT = Path(__file__).resolve().parent.parent
 def db():
     client = TuringDB(host="http://localhost:6666")
     try:
-        graphs = client.list_available_graphs()
+        # An in-memory TuringDB (run.sh) has graphs only in the loaded list, never on disk
+        graphs = client.list_available_graphs() + client.list_loaded_graphs()
     except Exception:
         pytest.skip("TuringDB is not running on localhost:6666")
     if GRAPH not in graphs:
-        subprocess.run([str(ROOT / "scripts" / "build_graph.sh"), GRAPH], check=True, cwd=ROOT)
+        subprocess.run([str(ROOT / "scripts" / "build_graph.sh"), GRAPH, "--demo"], check=True, cwd=ROOT)
     client.load_graph(GRAPH, raise_if_loaded=False)
     client.set_graph(GRAPH)
+    in_change(client, lambda c: c.query("MATCH (s:SimControl) SET s.script = true"))  # also on an older build
     return client
 
 
 @pytest.fixture
 def fresh(db):
-    """The scenario at its start; whatever a test leaves in an open change is thrown away."""
+    """The scenario at its start, without the demo script's events (tests/test_events.py covers those, and a
+    retuned script must not change these results); whatever a test leaves in an open change is thrown away."""
     in_change(db, reset_writes)
+    in_change(db, lambda c: c.query("MATCH (e:Event) DETACH DELETE e"))
     yield db
     db.checkout()
 
