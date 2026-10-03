@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 
 import { C2Map } from '@/components/c2/c2-map'
 import {
   EDGE_STYLE,
   FACILITY_COLOR,
   FACILITY_LABEL,
+  HIGHLIGHT_COLOR,
   JUNCTION_COLOR,
   ROAD_BASE_COLOR,
   ROAD_CLOSED_COLOR,
@@ -14,6 +16,8 @@ import {
   threatColor,
 } from '@/components/c2/colors'
 import { fetchGraph } from '@/components/c2/graph-data'
+import { QueryBar } from '@/components/c2/query-bar'
+import { type Selection, neighbourhood } from '@/components/c2/selection'
 import { useScenarioStore } from '@/stores'
 
 const NodeKey = ({ color, label, small }: { color: string; label: string; small?: boolean }) => (
@@ -72,19 +76,28 @@ const Legend = () => (
     </div>
     <EdgeKey color={EDGE_STYLE.NEAR.color} dashed label="NEAR" />
     <EdgeKey color={EDGE_STYLE.AFFECTS.color} dashed label="AFFECTS" />
-    <div className="text-content-fourth mt-2">Click a node to inspect it.</div>
+    <EdgeKey color={HIGHLIGHT_COLOR} label="Selected / query result" />
+    <div className="text-content-fourth mt-2">
+      Click a node to see its relationships; click empty map to clear.
+    </div>
   </div>
 )
 
 export const TC2Page = () => {
   const graphName = useScenarioStore((state) => state.graph)
   const change = useScenarioStore((state) => state.change)
+  const [selection, setSelection] = useState<Selection | null>(null)
+  const [fitRequest, setFitRequest] = useState(0)
 
   const graph = useQuery({
     queryKey: ['c2-graph', graphName, change],
     queryFn: () => fetchGraph(graphName, change),
     staleTime: Number.POSITIVE_INFINITY,
   })
+
+  // A selection refers to one branch's graph; drop it when the branch changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on branch switch only
+  useEffect(() => setSelection(null), [graphName, change])
 
   const unplaced = graph.data?.unplaced
     ? ` \u00b7 ${graph.data.unplaced} nodes without a position`
@@ -97,10 +110,28 @@ export const TC2Page = () => {
 
   return (
     <div className="relative h-full w-full">
-      <C2Map graph={graph.data} graphName={graphName} change={change} />
+      <C2Map
+        graph={graph.data}
+        selection={selection}
+        onSelectNode={(nid) =>
+          setSelection(nid === null || !graph.data ? null : neighbourhood(graph.data, nid))
+        }
+        graphName={graphName}
+        change={change}
+        fitRequest={fitRequest}
+      />
+      <QueryBar
+        graph={graph.data}
+        graphName={graphName}
+        change={change}
+        onResult={(outcome) => {
+          setSelection(outcome && outcome.selection.nodes.size > 0 ? outcome.selection : null)
+          if (outcome?.selection.nodes.size) setFitRequest((n) => n + 1)
+        }}
+      />
       <Legend />
-      <div className="bg-grey-900/90 text-content-primary border-grey-700 absolute top-3 left-3 z-[1000] rounded-md border px-3 py-1.5 text-xs">
-        {graphName} on {change ? `change ${change}` : 'main'} {'·'} {status}
+      <div className="bg-grey-900/90 text-content-fourth border-grey-700 absolute top-3 right-3 z-[1000] rounded-md border px-3 py-1.5 text-xs">
+        {graphName} on {change ? `change ${change}` : 'main'} {'\u00b7'} {status}
       </div>
     </div>
   )

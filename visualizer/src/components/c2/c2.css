@@ -95,3 +95,21 @@
 .c2-inspector-note {
   color: #8b9bb0;
 }
+
+.c2-inspector ul {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.c2-inspector li {
+  padding: 1px 0;
+}
+
+.c2-inspector-section {
+  margin-top: 8px;
+  color: #8b9bb0;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}

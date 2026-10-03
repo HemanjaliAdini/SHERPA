@@ -92,8 +92,10 @@ export function nodeColor(label: string, kind: string): string {
 
 export type EdgeStyle = { color: string; weight: number; dashArray?: string }
 export const EDGE_STYLE: Record<string, EdgeStyle> = {
-  NEAR: { color: '#9fb0c3', weight: 1.2, dashArray: '3 4' },
-  AFFECTS: { color: THREAT_MARKER_COLOR, weight: 1.5, dashArray: '5 3' },
+  NEAR: { color: '#e2e8f0', weight: 2.5, dashArray: '4 4' },
+  AFFECTS: { color: THREAT_MARKER_COLOR, weight: 3, dashArray: '6 4' },
 }
+// Selected / query-result edges
+export const HIGHLIGHT_COLOR = '#fde047'
 // Any other relationship (e.g. mission edges added later) is still drawn, just in this colour
 export const OTHER_EDGE_STYLE: EdgeStyle = { color: '#c084fc', weight: 2 }
