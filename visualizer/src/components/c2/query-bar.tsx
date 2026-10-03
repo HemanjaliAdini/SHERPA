@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { executeCypherQueryFull } from '@/api'
 import { CypherQueryError } from '@/api/responses/cypherQuery.response'
 import type { GeoGraph } from './graph-data'
+import { Kbd } from './map-controls'
 import { type QueryOutcome, selectionFromResult } from './selection'
 
 // Preset queries, all checked against the evac2 graph. Routes use road length until
@@ -72,12 +73,15 @@ type Props = {
   graphName: string
   change: string | undefined
   onResult: (outcome: QueryOutcome | null) => void
+  /** Folded away by default so the map stays uncluttered; `/` opens it */
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }
 
 const cell = (v: unknown) =>
   v === null || v === undefined ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v)
 
-export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
+export const QueryBar = ({ graph, graphName, change, onResult, open, onOpenChange }: Props) => {
   const [query, setQuery] = useState(
     'MATCH (c:Casualty)-[r:NEAR]->(j:Junction)-[e:ROAD]->(k) RETURN c, r, j, e, k'
   )
@@ -85,6 +89,11 @@ export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
   const [error, setError] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<QueryOutcome | null>(null)
   const [showRows, setShowRows] = useState(false)
+  const input = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    if (open) input.current?.focus()
+  }, [open])
 
   const run = async (q = query) => {
     if (!graph || !q.trim()) return
@@ -112,10 +121,23 @@ export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
     onResult(null)
   }
 
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenChange(true)}
+        className="bg-grey-900/95 border-grey-600 text-content-primary hover:bg-grey-700 flex h-11 items-center gap-3 rounded-lg border px-3 text-sm font-medium shadow-lg"
+      >
+        Query the graph <Kbd>/</Kbd>
+      </button>
+    )
+  }
+
   return (
-    <div className="bg-grey-900/95 text-content-primary border-grey-700 absolute top-3 left-3 z-[1000] flex w-[640px] max-w-[calc(100%-24px)] flex-col gap-2 rounded-md border p-2 text-xs">
+    <div className="bg-grey-900/95 text-content-primary border-grey-700 flex w-[640px] max-w-full flex-col gap-2 rounded-md border p-2 text-xs shadow-lg">
       <div className="flex gap-2">
         <textarea
+          ref={input}
           className="bg-grey-800 border-grey-600 text-content-primary min-h-[34px] flex-1 resize-y rounded border px-2 py-1.5 font-mono text-xs outline-none focus:border-[#7f93aa]"
           rows={2}
           spellCheck={false}
@@ -144,6 +166,13 @@ export const QueryBar = ({ graph, graphName, change, onResult }: Props) => {
             onClick={clear}
           >
             Clear
+          </button>
+          <button
+            type="button"
+            className="bg-grey-800 hover:bg-grey-700 text-content-fourth rounded px-3 py-1"
+            onClick={() => onOpenChange(false)}
+          >
+            Close
           </button>
         </div>
       </div>

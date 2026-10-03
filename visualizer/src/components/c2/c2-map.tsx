@@ -1,6 +1,6 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 
 import { executeCypherQuery } from '@/api'
 import './c2.css'
@@ -33,6 +33,15 @@ type Props = {
   change: string | undefined
   /** Incremented to ask the map to zoom to the current selection (e.g. after a query) */
   fitRequest: number
+}
+
+/** Commands the page can send to the map (buttons and keyboard shortcuts). */
+export type C2MapHandle = {
+  zoomIn: () => void
+  zoomOut: () => void
+  resetView: () => void
+  /** Bring these nodes into view */
+  focusNodes: (nids: number[]) => void
 }
 
 async function loadGeoJson(name: string): Promise<GeoJSON.FeatureCollection> {
@@ -85,7 +94,10 @@ function nodeLook(n: GraphNode, anchors: Set<number>): NodeLook {
   }
 }
 
-export const C2Map = ({ graph, selection, onSelectNode, graphName, change, fitRequest }: Props) => {
+export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
+  { graph, selection, onSelectNode, graphName, change, fitRequest },
+  ref
+) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const graphLayer = useRef<L.LayerGroup | null>(null)
@@ -106,7 +118,6 @@ export const C2Map = ({ graph, selection, onSelectNode, graphName, change, fitRe
       zoomSnap: 0.5,
       maxBounds: SECTOR_BOUNDS.pad(0.3),
     })
-    L.control.zoom({ position: 'bottomright' }).addTo(m)
     m.attributionControl.setPrefix(false)
     m.attributionControl.addAttribution('Map data © OpenStreetMap contributors (ODbL)')
     m.fitBounds(SECTOR_BOUNDS)
@@ -261,17 +272,29 @@ export const C2Map = ({ graph, selection, onSelectNode, graphName, change, fitRe
     }
   }, [graph, selection])
 
-  // Zoom to the selection on request, so a query result is brought into view
-  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new request should move the view
-  useEffect(() => {
+  function focusNodes(nids: number[]) {
     const m = map.current
-    if (!m || !graph || !selection || fitRequest === 0) return
-    const points = [...selection.nodes]
+    if (!m || !graph) return
+    const points = nids
       .map((nid) => graph.nodes.get(nid))
       .filter((n) => n !== undefined)
       .map((n) => L.latLng(n.lat, n.lon))
-    if (points.length === 1) m.setView(points[0], Math.max(m.getZoom(), 13))
-    else if (points.length > 1) m.fitBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 15 })
+    if (points.length === 1) m.flyTo(points[0], Math.max(m.getZoom(), 14), { duration: 0.6 })
+    else if (points.length > 1)
+      m.flyToBounds(L.latLngBounds(points).pad(0.3), { maxZoom: 15, duration: 0.6 })
+  }
+
+  useImperativeHandle(ref, () => ({
+    zoomIn: () => map.current?.zoomIn(),
+    zoomOut: () => map.current?.zoomOut(),
+    resetView: () => map.current?.flyToBounds(SECTOR_BOUNDS, { duration: 0.6 }),
+    focusNodes,
+  }))
+
+  // Zoom to the selection on request, so a query result is brought into view
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only a new request should move the view
+  useEffect(() => {
+    if (selection && fitRequest > 0) focusNodes([...selection.nodes])
   }, [fitRequest])
 
   // Node inspector: properties read from the branch being shown, plus the node's relationships
@@ -328,4 +351,4 @@ export const C2Map = ({ graph, selection, onSelectNode, graphName, change, fitRe
   }
 
   return <div ref={container} className="c2-map h-full w-full" />
-}
+})
