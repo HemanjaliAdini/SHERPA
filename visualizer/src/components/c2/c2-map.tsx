@@ -108,6 +108,18 @@ function nodeLook(n: GraphNode, anchors: Set<number>): NodeLook {
   }
 }
 
+const SLIDE_MS = 900 // a little under one tick at 1x
+
+function slide(marker: L.CircleMarker, from: L.LatLng, to: L.LatLng) {
+  const start = performance.now()
+  const step = (t: number) => {
+    const k = Math.min((t - start) / SLIDE_MS, 1)
+    marker.setLatLng([from.lat + (to.lat - from.lat) * k, from.lng + (to.lng - from.lng) * k])
+    if (k < 1) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+
 export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
   { graph, selection, onSelectNode, graphName, change, fitRequest },
   ref
@@ -205,8 +217,9 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     edgeLines.current = graph.edges.map((e) => {
       const a = graph.nodes.get(e.src)
       const b = graph.nodes.get(e.dst)
+      // Only roads are drawn; NEAR, AFFECTS and mission links stay in the data (inspector, queries)
       const line = L.polyline(
-        a && b
+        a && b && e.type === 'ROAD'
           ? [
               [a.lat, a.lon],
               [b.lat, b.lon],
@@ -217,14 +230,14 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
       return line.addTo(group)
     })
 
-    // Mission routes under the nodes, so they read as the planned path
-    for (const route of graph.routes.values()) {
-      const points = route
-        .map((nid) => graph.nodes.get(nid))
-        .filter((n) => n !== undefined)
-        .map((n) => [n.lat, n.lon] as [number, number])
-      if (points.length > 1) {
-        L.polyline(points, { ...MISSION_ROUTE_STYLE, interactive: false }).addTo(group)
+    // What is left of each mission's route, in its vehicle's colour, under the nodes
+    for (const route of graph.activeRoutes) {
+      if (route.points.length > 1) {
+        L.polyline(route.points, {
+          ...MISSION_ROUTE_STYLE,
+          color: route.color,
+          interactive: false,
+        }).addTo(group)
       }
     }
 
@@ -240,12 +253,21 @@ export const C2Map = forwardRef<C2MapHandle, Props>(function C2Map(
     const ordered = [...graph.nodes.values()].sort(
       (x, y) => Number(x.label !== 'Junction') - Number(y.label !== 'Junction')
     )
+    // Where each node was drawn before this refresh, so moving vehicles slide instead of jumping
+    const previous = new Map(
+      [...nodeMarkers.current].map(([nid, { marker }]) => [nid, marker.getLatLng()])
+    )
     nodeMarkers.current = new Map()
     for (const n of ordered) {
+      // Missions have no place of their own; a casualty in transit rides inside its vehicle ("+1")
+      if (n.label === 'Mission' || n.status === 'in_transit') continue
       const look = nodeLook(n, anchors)
-      const marker = L.circleMarker([n.lat, n.lon], { ...look.style, radius: look.radius })
+      const from = n.label === 'Junction' ? undefined : previous.get(n.nid)
+      const marker = L.circleMarker(from ?? [n.lat, n.lon], { ...look.style, radius: look.radius })
+      if (from && (from.lat !== n.lat || from.lng !== n.lon))
+        slide(marker, from, L.latLng(n.lat, n.lon))
       if (n.label !== 'Junction') {
-        marker.bindTooltip(n.id, {
+        marker.bindTooltip(n.tag, {
           permanent: true,
           direction: 'right',
           offset: [6, 0],

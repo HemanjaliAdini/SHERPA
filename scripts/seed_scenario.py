@@ -47,14 +47,22 @@ VEHICLES = [
     ("AMB-1", "ambulance", 47.5602, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
     ("AMB-2", "ambulance", 47.5598, 35.790, 4, 2, 300.0, 100.0, 0.4, 80.0),
 ]
-# id, lat, lon, time_of_injury, triage_category, mobility. All on the near side of the front line (47.436)
+# id, lat, lon, time_of_injury, then the MIST report the medic triages from: mechanism, injuries, signs, treatment.
+# Casualties arrive untriaged (status reported); the medic sets triage_category and mobility on the C2 screen.
+# ponytail: placeholder clinical texts, to be replaced by Noo / the triage parser. All behind the front line (47.436)
 CASUALTIES = [
-    ("CAS-1", 47.4430, 35.8335, "2023-09-12T04:10:00Z", "T1", "litter"),
-    ("CAS-2", 47.4381, 35.7986, "2023-09-12T04:25:00Z", "T2", "ambulatory"),
-    ("CAS-3", 47.4440, 35.8485, "2023-09-12T04:40:00Z", "T1", "litter"),
-    ("CAS-4", 47.4415, 35.8250, "2023-09-12T04:52:00Z", "T3", "ambulatory"),
-    ("CAS-5", 47.4395, 35.8450, "2023-09-12T05:05:00Z", "T2", "litter"),
+    ("CAS-1", 47.4430, 35.8335, "2023-09-12T04:10:00Z", "Artillery fragment",
+     "Catastrophic bleed, left thigh", "HR 130, RR 28, responds to pain only", "Tourniquet 04:12"),
+    ("CAS-2", 47.4381, 35.7986, "2023-09-12T04:25:00Z", "FPV drone blast",
+     "Fragment wounds, right forearm", "HR 100, RR 18, alert, walking", "Pressure dressing"),
+    ("CAS-3", 47.4440, 35.8485, "2023-09-12T04:40:00Z", "Anti-personnel mine",
+     "Traumatic amputation, right foot; burns to legs", "HR 140, RR 30, confused", "Tourniquet, morphine 10 mg"),
+    ("CAS-4", 47.4415, 35.8250, "2023-09-12T04:52:00Z", "Small arms fire",
+     "Graze, left shoulder", "HR 90, RR 16, alert, walking", "Field dressing"),
+    ("CAS-5", 47.4395, 35.8450, "2023-09-12T05:05:00Z", "Vehicle rollover",
+     "Suspected pelvic fracture, cannot walk", "HR 115, RR 22, alert", "Pelvic binder"),
 ]
+SCENARIO_START = "2023-09-12T05:30:00Z"  # Clock.now at seed and after a reset
 # id, type, level, active, lat, lon: on the main road between HP-1 and R1-A; starts inactive
 THREAT = ("THR-1", "fpv_drone", 0.7, False, 47.530, 35.800)
 
@@ -90,13 +98,17 @@ def create_statement() -> str:
                     range_km=rng, battery_pct=batt, max_threat=max_threat, speed_kmh=speed, status=lit("idle"))
             + ")"
         )
-    for eid, lat, lon, toi, triage, mobility in CASUALTIES:
+    for eid, lat, lon, toi, mechanism, injuries, signs, treatment in CASUALTIES:
         parts.append(
             f"({var(eid)}:Casualty "
-            + props(id=lit(eid), lat=lat, lon=lon, time_of_injury=f"datetime({lit(toi)})",
-                    status=lit("awaiting_pickup"), triage_category=lit(triage), mobility=lit(mobility))
+            + props(id=lit(eid), lat=lat, lon=lon, time_of_injury=f"datetime({lit(toi)})", status=lit("reported"),
+                    mist_mechanism=lit(mechanism), mist_injuries=lit(injuries), mist_signs=lit(signs),
+                    mist_treatment=lit(treatment))
             + ")"
         )
+    # Simulator clock (written only by simulate.py) and controls (written only by the C2 screen)
+    parts.append("(:Clock " + props(id=lit("CLOCK"), now=f"datetime({lit(SCENARIO_START)})", run=0) + ")")
+    parts.append("(:SimControl " + props(id=lit("SIM"), running=lit(False), speed=1.0, reset=lit(False)) + ")")
     tid, ttype, level, active, _, _ = THREAT
     parts.append(f"({var(tid)}:Threat " + props(id=lit(tid), type=lit(ttype), level=level, active=active) + ")")
     return "CREATE " + ",\n       ".join(parts)

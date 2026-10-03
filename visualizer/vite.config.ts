@@ -1,11 +1,12 @@
-import { defineConfig } from 'vite'
+import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
+import { defineConfig } from 'vite'
 import glsl from 'vite-plugin-glsl'
 
 const apiPort = Number(process.env.TURING_API_PORT || 6666)
 const frontendPort = Number(process.env.TURING_FRONTEND_PORT || 8080)
+const voicePort = Number(process.env.VOICE_PORT || 6680)
 console.log('- API Proxy listening on port:', apiPort)
 
 // https://vite.dev/config/
@@ -29,6 +30,8 @@ export default defineConfig({
         target: ` http://localhost:${apiPort}`,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // scripts/voice_server.py: spoken questions to the C2 page
+      '/voice': { target: `http://localhost:${voicePort}` },
     },
   },
   plugins: [react(), tailwindcss(), glsl()],

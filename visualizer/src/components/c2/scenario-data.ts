@@ -11,6 +11,8 @@ export type Casualty = {
   /** junction the casualty is NEAR, and how far off the road network it is */
   junction: number | null
   offRoadMetres: number | null
+  /** MIST report the medic triages from */
+  mist: { mechanism: string; injuries: string; signs: string; treatment: string }
 }
 
 export type Vehicle = {
@@ -23,6 +25,7 @@ export type Vehicle = {
   rangeKm: number
   batteryPct: number
   maxThreat: number
+  speedKmh: number | null
   junction: number | null
 }
 
@@ -50,10 +53,11 @@ const str = (v: unknown) => (v === null || v === undefined ? '' : String(v))
 
 const CASUALTIES =
   'MATCH (c:Casualty) OPTIONAL MATCH (c)-[n:NEAR]->(j) RETURN c, c.id, c.triage_category, ' +
-  'c.mobility, c.status, c.time_of_injury, n.distance_m, j'
+  'c.mobility, c.status, c.time_of_injury, n.distance_m, j, c.mist_mechanism, c.mist_injuries, ' +
+  'c.mist_signs, c.mist_treatment'
 const VEHICLES =
   'MATCH (v:Vehicle) OPTIONAL MATCH (v)-[:NEAR]->(j) RETURN v, v.id, v.type, v.status, ' +
-  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j'
+  'v.litter_capacity, v.ambulatory_capacity, v.range_km, v.battery_pct, v.max_threat, j, v.speed_kmh'
 const FACILITIES =
   'MATCH (m:MedicalPoint) OPTIONAL MATCH (m)-[:NEAR]->(j) RETURN m, m.id, m.name, m.type, ' +
   'm.state, m.free_beds, m.medics_available, m.capabilities, j'
@@ -72,6 +76,7 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       injuredAt: r[5] ? new Date(String(r[5])) : null,
       offRoadMetres: r[6] === null || r[6] === undefined ? null : Number(r[6]),
       junction: nodeId(r[7]),
+      mist: { mechanism: str(r[8]), injuries: str(r[9]), signs: str(r[10]), treatment: str(r[11]) },
     })),
     vehicles: rowsOf(v).map((r) => ({
       nid: Number(r[0]),
@@ -84,6 +89,7 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
       batteryPct: num(r[7], 100),
       maxThreat: num(r[8], 1),
       junction: nodeId(r[9]),
+      speedKmh: r[10] === null || r[10] === undefined ? null : Number(r[10]),
     })),
     facilities: rowsOf(f).map((r) => ({
       nid: Number(r[0]),
@@ -99,7 +105,8 @@ export async function fetchScenario(graph: string, change?: string): Promise<Sce
   }
 }
 
-const TRIAGE_ORDER: Record<string, number> = { T1: 0, T2: 1, T3: 2, T4: 3 }
+// Untriaged reports first (the medic's work), then by category; the dead last
+const TRIAGE_ORDER: Record<string, number> = { '': -1, T1: 0, T2: 1, T3: 2, T4: 3, DEAD: 4 }
 
 /** Casualties still needing evacuation: most urgent first, then longest waiting first. */
 export function activeQueue(casualties: Casualty[]): Casualty[] {

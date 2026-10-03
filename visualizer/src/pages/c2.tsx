@@ -26,8 +26,17 @@ import {
   fetchScenario,
   formatClock,
 } from '@/components/c2/scenario-data'
-import { type Selection, neighbourhood } from '@/components/c2/selection'
+import { type Selection, neighbourhood, selectionFromIds } from '@/components/c2/selection'
+import {
+  SPEEDS,
+  fetchSim,
+  requestReset,
+  setRunning,
+  setSpeed,
+  setTriage,
+} from '@/components/c2/sim'
 import { useArrowCamera } from '@/components/c2/use-arrow-camera'
+import { VoiceAsk } from '@/components/c2/voice-ask'
 import { useScenarioStore } from '@/stores'
 
 // deck.gl is only downloaded when the 3D view is first opened
@@ -115,6 +124,7 @@ const KEY_HELP = [
   '1-9 casualty',
   'Esc clear',
   '/ query',
+  'M ask by voice',
   'L legend',
 ].join(' \u00b7 ')
 
@@ -125,7 +135,8 @@ const isTyping = (target: EventTarget | null) =>
 export const TC2Page = () => {
   const graphName = useScenarioStore((state) => state.graph)
   const change = useScenarioStore((state) => state.change)
-  const now = useScenarioStore((state) => state.now)
+  const fixedNow = useScenarioStore((state) => state.now)
+  const [manual, setManual] = useState(false)
   const [selection, setSelection] = useState<Selection | null>(null)
   const [fitRequest, setFitRequest] = useState(0)
   const [queryOpen, setQueryOpen] = useState(false)
@@ -139,18 +150,48 @@ export const TC2Page = () => {
   const queryClient = useQueryClient()
   const mapRef = useRef<C2MapHandle>(null)
   useArrowCamera(mapRef)
+  // After an action the simulator answers on its next pass (up to ~1 s), so keep refreshing a while
+  const busyUntil = useRef(0)
+
+  // The simulator's clock and controls; while it runs, the map and queue refresh every second
+  const sim = useQuery({
+    queryKey: ['c2-sim', graphName],
+    queryFn: () => fetchSim(graphName),
+    refetchInterval: 1000,
+  })
+  const running = sim.data?.running ?? false
+  const now = sim.data?.now ?? fixedNow
+  const refresh = () => (Date.now() < busyUntil.current ? 1000 : false)
 
   const graph = useQuery({
     queryKey: ['c2-graph', graphName, change],
     queryFn: () => fetchGraph(graphName, change),
     staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: refresh,
   })
 
   const scenario = useQuery({
     queryKey: ['c2-scenario', graphName, change],
     queryFn: () => fetchScenario(graphName, change),
     staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: refresh,
   })
+  const untriaged = scenario.data?.casualties.filter((c) => c.status === 'reported').length ?? 0
+  const refreshAll = () => {
+    for (const key of ['c2-sim', 'c2-graph', 'c2-scenario'])
+      queryClient.invalidateQueries({ queryKey: [key] })
+  }
+  // Every tick (and a reset) changes the clock: refresh the map and the queue once per change
+  const clockTime = sim.data?.now.getTime()
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch on each clock change only
+  useEffect(() => {
+    for (const key of ['c2-graph', 'c2-scenario'])
+      queryClient.invalidateQueries({ queryKey: [key] })
+  }, [clockTime])
+  const act = (work: Promise<void>) => {
+    busyUntil.current = Date.now() + 6000
+    work.then(refreshAll).catch((err) => setNotice(String(err)))
+  }
   const queue = scenario.data ? activeQueue(scenario.data.casualties) : []
 
   const selectNode = (nid: number | null) => {
@@ -255,7 +296,7 @@ export const TC2Page = () => {
           </Suspense>
         )}
 
-        <div className="pointer-events-none absolute top-3 left-3 z-[1000] max-w-[calc(100%-24px)]">
+        <div className="pointer-events-none absolute top-3 left-3 z-[1000] flex max-w-[calc(100%-24px)] flex-col items-start gap-2">
           <QueryBar
             graph={graph.data}
             graphName={graphName}
@@ -265,6 +306,19 @@ export const TC2Page = () => {
             onResult={(outcome) => {
               setSelection(outcome && outcome.selection.nodes.size > 0 ? outcome.selection : null)
               if (outcome?.selection.nodes.size) setFitRequest((n) => n + 1)
+            }}
+          />
+          <VoiceAsk
+            graphName={graphName}
+            change={change}
+            now={now}
+            onAnswer={(answer) => {
+              const picked =
+                answer && graph.data
+                  ? selectionFromIds(graph.data, answer.highlight ?? [], answer.paths ?? [])
+                  : null
+              setSelection(picked && picked.nodes.size > 0 ? picked : null)
+              if (picked?.nodes.size) setFitRequest((n) => n + 1)
             }}
           />
         </div>
@@ -327,8 +381,51 @@ export const TC2Page = () => {
 
       <aside className="border-grey-700 bg-grey-900 text-content-primary flex h-full w-[400px] shrink-0 flex-col border-l">
         <div className="border-grey-700 flex items-center justify-between border-b px-4 py-2 text-xs">
-          <span className="text-content-fourth">Scenario time</span>
           <span className="font-mono text-sm font-semibold">{formatClock(now)}</span>
+          {sim.data?.resetting ? (
+            <span className="text-content-fourth">Resetting...</span>
+          ) : sim.data ? (
+            <span className="flex items-center gap-2">
+              {untriaged > 0 && <span className="text-[#fbbf24]">{untriaged} to triage</span>}
+              <button
+                type="button"
+                onClick={() => act(setRunning(graphName, !running))}
+                className="bg-grey-600 hover:bg-grey-500 rounded px-3 py-1 font-semibold"
+              >
+                {running ? 'Pause' : 'Play'}
+              </button>
+              <button
+                type="button"
+                onClick={() => act(requestReset(graphName))}
+                className="text-content-fourth hover:text-content-primary underline"
+                title="Put the scenario back to its start; the history is kept"
+              >
+                Reset
+              </button>
+              <select
+                value={sim.data.speed}
+                onChange={(e) => act(setSpeed(graphName, Number(e.target.value)))}
+                className="bg-grey-800 rounded px-1 py-1"
+                title="Scenario minutes per second"
+              >
+                {SPEEDS.map((v) => (
+                  <option key={v} value={v}>
+                    {v}x
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setManual(!manual)}
+                className="text-content-fourth hover:text-content-primary underline"
+                title="Manual mission planner"
+              >
+                {manual ? 'Auto' : 'Manual'}
+              </button>
+            </span>
+          ) : (
+            <span className="text-content-fourth">no simulator clock in this graph</span>
+          )}
         </div>
         {notice && (
           <div className="border-b border-[#166534] bg-[#14532d] px-4 py-2 text-sm font-medium">
@@ -356,10 +453,19 @@ export const TC2Page = () => {
             now={now}
             selectedNid={focusNid}
             onLocate={locateCasualty}
-            onPlan={(c) => {
-              setNotice(null)
-              setPlanningFor(c)
-            }}
+            onPlan={
+              manual
+                ? (c) => {
+                    setNotice(null)
+                    setPlanningFor(c)
+                  }
+                : undefined
+            }
+            onTriage={
+              sim.data?.resetting
+                ? undefined
+                : (c, category, mobility) => act(setTriage(graphName, c.nid, category, mobility))
+            }
           />
         )}
       </aside>

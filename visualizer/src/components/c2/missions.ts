@@ -16,7 +16,8 @@ export async function createMission(graphName: string, plan: Plan, now: Date): P
   const missionId = `M-${Number((count[0]?.[0] as number[] | undefined)?.[0] ?? 0) + 1}`
 
   const opened = await q('CHANGE NEW')
-  const change = String((opened[0][0] as number[])[0])
+  // the change id is sent back in hex, as the Python SDK does; decimal would name another change
+  const change = Number((opened[0][0] as number[])[0]).toString(16)
   try {
     // Pickup ETAs accumulate along the legs: leg 0 reaches the first casualty, and so on
     let elapsed = 0
